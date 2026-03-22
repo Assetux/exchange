@@ -9,7 +9,7 @@ A multi-chain token swap platform supporting 25+ EVM networks and Solana. Swap a
 - **Cross-chain swaps** — swap tokens across Ethereum, Base, BSC, Arbitrum, Polygon, Optimism, Avalanche, Solana, and 20+ more networks via LiFi routing
 - **Any token** — curated defaults plus community-listed tokens; unknown chains fall back to LiFi's full token catalog
 - **Buy with card** — Visa/Mastercard onramp via Wert: pay USD, receive any supported token in your wallet
-- **List a token** — submit any token for listing by paying a 1,000,000 ASX fee on Solana; verified on-chain automatically
+- **List a token** — submit any token for listing by paying a 10,000,000 ASX fee on Solana; verified on-chain automatically
 - **Non-custodial** — swaps execute from user wallets directly; no funds held
 
 ---
