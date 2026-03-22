@@ -1,0 +1,13 @@
+[
+  {
+    "tokenAddress": "0xfed13d0c40790220fbde712987079eda1ed75c51",
+    "network": 56,
+    "tokenName": "BTR token",
+    "tokenSymbol": "BTR",
+    "wallet": "6bvB3PTz48wozyPJeuTB77axexWu9MfUSjBYbQzEgK88",
+    "txSig": "4Pmst6NV1kVL1LkXyYwpwmbKqs7LqiKcqZ9DdZq6TvyXZUrzueJr2c8HXfRYNJDbPSWz4f8aviMZWYWb21WuCqCk",
+    "signature": "kDXc3pY4qw87KsRQ32eRKtv89rEFA6OokvFrv3HYGNObExDA9nkEoFa2xT2tKkRj+aZNgXOMtEnLg71wwsnYDA==",
+    "verified": true,
+    "listedAt": "2026-03-22T10:19:59.441Z"
+  }
+]

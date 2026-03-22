@@ -1,37 +1,112 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Assetux Exchange
+
+A multi-chain token swap platform supporting 25+ EVM networks and Solana. Swap any token across networks, buy crypto with a card, and list new tokens permissionlessly.
+
+---
+
+## Features
+
+- **Cross-chain swaps** — swap tokens across Ethereum, Base, BSC, Arbitrum, Polygon, Optimism, Avalanche, Solana, and 20+ more networks via LiFi routing
+- **Any token** — curated defaults plus community-listed tokens; unknown chains fall back to LiFi's full token catalog
+- **Buy with card** — Visa/Mastercard onramp via Wert: pay USD, receive any supported token in your wallet
+- **List a token** — submit any token for listing by paying a 1,000,000 ASX fee on Solana; verified on-chain automatically
+- **Non-custodial** — swaps execute from user wallets directly; no funds held
+
+---
+
+## Supported Networks & Tokens
+
+| Network | Tokens |
+|---|---|
+| Ethereum | ETH, USDC, USDT, ASX |
+| Base | ETH, USDC, ASX |
+| BSC | BNB, USDC, USDT, ASX |
+| Arbitrum | ETH, USDC, USDT, ASX |
+| Polygon | POL, USDC, USDT |
+| Optimism | ETH, USDC, USDT |
+| Avalanche | AVAX, USDC, USDT |
+| Solana | SOL, USDC, USDT, ASX |
+| zkSync Era | ETH, USDC, USDT |
+| Linea | ETH, USDC |
+| Scroll | ETH, USDC, USDT |
+| Blast | ETH, USDB |
+| Mantle | MNT, USDC, USDT |
+| Gnosis | xDAI, USDC, USDT |
+| World Chain | ETH, USDC, ASX |
+| Celo | CELO, USDC, USDT |
+| Mode | ETH, USDC, USDT |
+| Taiko | ETH, USDC, USDT |
+| Sonic | S, USDC |
+| Sei EVM | SEI, USDC |
+| opBNB | BNB, USDC |
+
+Additional tokens can be listed by the community via the `/listing` page.
+
+---
 
 ## Getting Started
 
-First, run the development server:
+### 1. Install dependencies
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### 2. Configure environment
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+cp .env.example .env.local
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Fill in the required keys (see [Environment Variables](#environment-variables) below).
 
-## Learn More
+### 3. Run
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+# Development
+npm run dev
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# Production
+npm run build
+npm start
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Open [http://localhost:3000](http://localhost:3000).
 
-## Deploy on Vercel
+---
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Environment Variables
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-# exchange
+### Required
+
+| Variable | Description | Where to get it |
+|---|---|---|
+| `NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID` | WalletConnect project ID | [cloud.walletconnect.com](https://cloud.walletconnect.com) |
+| `NEXT_PUBLIC_WERT_PARTNER_ID` | Wert widget partner ID | [wert.io/partners](https://wert.io/partners) |
+| `WERT_API_KEY` | Wert server-side API key (secret) | [wert.io/partners](https://wert.io/partners) |
+| `EXCHANGE_WALLET_ADDRESS` | Wallet that receives USDC from Wert (Base chain) | Your wallet |
+| `EXCHANGE_WALLET_PRIVATE_KEY` | Private key for executing swaps after fiat onramp (secret) | Your wallet |
+| `NEXT_PUBLIC_SITE_URL` | Public URL of the app (used in Wert callbacks) | Your deployment URL |
+
+### RPC Providers
+
+The app uses [NowNodes](https://nownodes.io) for most chains and [Alchemy](https://alchemy.com) for others.
+
+| Variable | Chains |
+|---|---|
+| `NOWNODES_KEY` | ETH, Base, BSC, Arbitrum, Polygon, Optimism, Avalanche, Gnosis, zkSync, Linea, Scroll, Blast, Mantle, Celo, Ronin, and more |
+| `ALCHEMY_KEY` | World Chain, Fraxtal, Apechain, Mode, Taiko, Soneium, Abstract, Unichain, Berachain, Sonic, Sei, Ink, Immutable X, opBNB |
+| `SOLANA_RPC_URL` | Solana (server-side) |
+| `NEXT_PUBLIC_SOLANA_RPC_URL` | Solana (client-side) |
+
+> **Security:** Never prefix wallet private keys or server-side secrets with `NEXT_PUBLIC_`. Those values are exposed to the browser.
+
+---
+
+## Architecture
+
+- **Swap routing** — [LiFi API](https://li.quest/v1) with 3% slippage, registered integrator ID `assetux`
+- **EVM wallets** — RainbowKit + Wagmi
+- **Solana wallets** — Phantom, Solflare via `@solana/wallet-adapter`
+- **Fiat onramp** — Wert webhook triggers backend swap: card payment → USDC on Base → swap to destination token (5% service fee)
+- **Token listings** — stored in `/data/listings.json`; on-chain Solana transaction verified before listing is added
