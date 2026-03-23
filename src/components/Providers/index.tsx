@@ -2,10 +2,9 @@
 import { ReactNode } from 'react';
 import { ThemeProvider, createTheme, CssBaseline } from '@mui/material';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { WagmiProvider, createConfig, http } from 'wagmi';
-import { injected } from 'wagmi/connectors';
+import { WagmiProvider, http } from 'wagmi';
 import { mainnet, base, polygon, arbitrum, optimism, bsc, avalanche } from 'wagmi/chains';
-import { RainbowKitProvider } from '@rainbow-me/rainbowkit';
+import { getDefaultConfig, RainbowKitProvider } from '@rainbow-me/rainbowkit';
 import '@rainbow-me/rainbowkit/styles.css';
 import {
   ConnectionProvider,
@@ -36,11 +35,13 @@ const theme = createTheme({
   },
 });
 
-// Public RPC URLs that allow CORS from localhost (avoids eth.merkle.io default)
-// Replace with Alchemy/Infura URLs via env vars for production reliability
-const wagmiConfig = createConfig({
+// getDefaultConfig includes WalletConnect + injected connectors automatically,
+// enabling mobile wallets (MetaMask mobile, Rainbow, etc.) via QR / deep link.
+// Get a free projectId at https://cloud.walletconnect.com
+const wagmiConfig = getDefaultConfig({
+  appName: 'Assetux Exchange',
+  projectId: process.env.NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID || '',
   chains: [mainnet, base, polygon, arbitrum, optimism, bsc, avalanche],
-  connectors: [injected()],
   transports: {
     [mainnet.id]:   http(process.env.NEXT_PUBLIC_ETH_RPC      || 'https://eth.nownodes.io/31299d58-8732-45f2-8c4d-36754e81a8f4'),
     [base.id]:      http(process.env.NEXT_PUBLIC_BASE_RPC     || 'https://base.nownodes.io/31299d58-8732-45f2-8c4d-36754e81a8f4'),
@@ -50,6 +51,7 @@ const wagmiConfig = createConfig({
     [bsc.id]:       http(process.env.NEXT_PUBLIC_BSC_RPC      || 'https://bsc.nownodes.io/31299d58-8732-45f2-8c4d-36754e81a8f4'),
     [avalanche.id]: http(process.env.NEXT_PUBLIC_AVAX_RPC     || 'https://avax.nownodes.io/31299d58-8732-45f2-8c4d-36754e81a8f4'),
   },
+  ssr: true,
 });
 
 const queryClient = new QueryClient();
