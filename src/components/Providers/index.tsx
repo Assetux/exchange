@@ -20,6 +20,13 @@ import {
 } from '@solana/wallet-adapter-react';
 import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
 import { PhantomWalletAdapter, SolflareWalletAdapter } from '@solana/wallet-adapter-wallets';
+import {
+  SolanaMobileWalletAdapter,
+  createDefaultAuthorizationResultCache,
+  createDefaultAddressSelector,
+  createDefaultWalletNotFoundHandler,
+} from '@solana-mobile/wallet-adapter-mobile';
+import { WalletAdapterNetwork } from '@solana/wallet-adapter-base';
 import '@solana/wallet-adapter-react-ui/styles.css';
 
 const theme = createTheme({
@@ -82,7 +89,22 @@ const wagmiConfig = getDefaultConfig({
 
 const queryClient = new QueryClient();
 
-const solanaWallets = [new PhantomWalletAdapter(), new SolflareWalletAdapter()];
+const solanaWallets = [
+  // MWA: deep-links into Phantom/Solflare/etc on mobile Android (no window.solana needed)
+  new SolanaMobileWalletAdapter({
+    addressSelector: createDefaultAddressSelector(),
+    appIdentity: {
+      name: 'Assetux Exchange',
+      uri: 'https://exchange.assetux.com',
+      icon: '/favicon.ico',
+    },
+    authorizationResultCache: createDefaultAuthorizationResultCache(),
+    cluster: WalletAdapterNetwork.Mainnet,
+    onWalletNotFound: createDefaultWalletNotFoundHandler(),
+  }),
+  new PhantomWalletAdapter(),
+  new SolflareWalletAdapter(),
+];
 const solanaEndpoint =
   process.env.NEXT_PUBLIC_SOLANA_RPC_URL || 'https://sol.nownodes.io/31299d58-8732-45f2-8c4d-36754e81a8f4';
 
