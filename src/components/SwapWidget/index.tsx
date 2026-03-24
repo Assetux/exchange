@@ -216,11 +216,11 @@ export function SwapWidget() {
   }, [usdMode, fromAmount, toToken, toChain, toAddress]);
 
   const fetchQuote = useCallback(async (side: 'from' | 'to', amount: string) => {
-    if (!fromChain || !toChain || !fromToken || !toToken || !amount || !fromAddress) return;
-    if (!isToConnected || !toAddress) {
-      setError(isSolana(toChain) ? 'Connect Solana wallet to receive tokens' : 'Connect wallet to receive tokens');
-      return;
-    }
+    if (!fromChain || !toChain || !fromToken || !toToken || !amount) return;
+    // Use placeholder addresses so quotes load even without a connected wallet.
+    // Wallet is validated at swap execution time in handleSwap.
+    const quoteFromAddress = fromAddress || EXCHANGE_WALLET;
+    const quoteToAddress = toAddress || EXCHANGE_WALLET;
     setLoadingQuote(true);
     setError('');
     setQuote(null);
@@ -237,7 +237,7 @@ export function SwapWidget() {
         const refQuote = await getQuote({
           fromChain: fromChain.id, toChain: toChain.id,
           fromToken: fromToken.address, toToken: toToken.address,
-          fromAmount: refAmount, fromAddress, toAddress,
+          fromAmount: refAmount, fromAddress: quoteFromAddress, toAddress: quoteToAddress,
         });
         // rate = toAmount per 1 fromToken
         const rate = Number(refQuote.estimate.toAmount) / Number(refAmount);
@@ -250,7 +250,7 @@ export function SwapWidget() {
       const q = await getQuote({
         fromChain: fromChain.id, toChain: toChain.id,
         fromToken: fromToken.address, toToken: toToken.address,
-        fromAmount: resolvedFromAmount, fromAddress, toAddress,
+        fromAmount: resolvedFromAmount, fromAddress: quoteFromAddress, toAddress: quoteToAddress,
       });
       setQuote(q);
 
@@ -265,7 +265,7 @@ export function SwapWidget() {
     } finally {
       setLoadingQuote(false);
     }
-  }, [fromChain, toChain, fromToken, toToken, fromAddress, toAddress, isToConnected]);
+  }, [fromChain, toChain, fromToken, toToken, fromAddress, toAddress]);
 
   const handleSwap = async () => {
     if (!quote?.transactionRequest || !fromToken) return;

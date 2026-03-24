@@ -5,6 +5,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WagmiProvider, http } from 'wagmi';
 import { mainnet, base, polygon, arbitrum, optimism, bsc, avalanche } from 'wagmi/chains';
 import { getDefaultConfig, RainbowKitProvider } from '@rainbow-me/rainbowkit';
+import {
+  injectedWallet,
+  metaMaskWallet,
+  rainbowWallet,
+  walletConnectWallet,
+  coinbaseWallet,
+  trustWallet,
+} from '@rainbow-me/rainbowkit/wallets';
 import '@rainbow-me/rainbowkit/styles.css';
 import {
   ConnectionProvider,
@@ -35,12 +43,28 @@ const theme = createTheme({
   },
 });
 
-// getDefaultConfig includes WalletConnect + injected connectors automatically,
-// enabling mobile wallets (MetaMask mobile, Rainbow, etc.) via QR / deep link.
-// Get a free projectId at https://cloud.walletconnect.com
+const projectId = process.env.NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID || '';
+
+// Always include injected + MetaMask (work without WalletConnect).
+// WalletConnect-dependent wallets are added only when a projectId is set,
+// so the modal never renders empty on mobile when projectId is missing.
+const wallets = [
+  {
+    groupName: 'Popular',
+    wallets: [
+      injectedWallet,
+      metaMaskWallet,
+      coinbaseWallet,
+      trustWallet,
+      ...(projectId ? [rainbowWallet, walletConnectWallet] : []),
+    ],
+  },
+];
+
 const wagmiConfig = getDefaultConfig({
   appName: 'Assetux Exchange',
-  projectId: process.env.NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID || '',
+  projectId: projectId || 'assetux-no-wc',
+  wallets,
   chains: [mainnet, base, polygon, arbitrum, optimism, bsc, avalanche],
   transports: {
     [mainnet.id]:   http(process.env.NEXT_PUBLIC_ETH_RPC      || 'https://eth.nownodes.io/31299d58-8732-45f2-8c4d-36754e81a8f4'),
