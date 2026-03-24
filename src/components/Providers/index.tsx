@@ -45,26 +45,28 @@ const theme = createTheme({
 
 const projectId = process.env.NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID || '';
 
-// Always include injected + MetaMask (work without WalletConnect).
-// WalletConnect-dependent wallets are added only when a projectId is set,
-// so the modal never renders empty on mobile when projectId is missing.
-const wallets = [
-  {
-    groupName: 'Popular',
-    wallets: [
-      injectedWallet,
-      metaMaskWallet,
-      coinbaseWallet,
-      trustWallet,
-      ...(projectId ? [rainbowWallet, walletConnectWallet] : []),
-    ],
-  },
-];
+// injectedWallet works in MetaMask/Coinbase in-app browsers (window.ethereum present).
+// All other mobile wallets (MetaMask deep-link, Trust, Rainbow, WalletConnect QR)
+// require a real WalletConnect project ID — get one free at cloud.walletconnect.com
+// and set NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID in your deployment env vars.
+const walletList = projectId
+  ? [
+      {
+        groupName: 'Popular',
+        wallets: [injectedWallet, metaMaskWallet, coinbaseWallet, trustWallet, rainbowWallet, walletConnectWallet],
+      },
+    ]
+  : [
+      {
+        groupName: 'Browser Wallet',
+        wallets: [injectedWallet, coinbaseWallet],
+      },
+    ];
 
 const wagmiConfig = getDefaultConfig({
   appName: 'Assetux Exchange',
-  projectId: projectId || 'assetux-no-wc',
-  wallets,
+  projectId: projectId || 'placeholder',
+  wallets: walletList,
   chains: [mainnet, base, polygon, arbitrum, optimism, bsc, avalanche],
   transports: {
     [mainnet.id]:   http(process.env.NEXT_PUBLIC_ETH_RPC      || 'https://eth.nownodes.io/31299d58-8732-45f2-8c4d-36754e81a8f4'),
