@@ -281,6 +281,8 @@ export function ListingPage() {
       integrator: 'assetux',
       order: 'FASTEST',
       slippage: '0.03',
+      // Solana requires a valid base58 toAddress; use the token address (already validated pubkey)
+      ...(lifiToChain === 1151111081099710 && { toAddress: addr }),
     });
     fetch(`${LIFI_BASE}/quote?${q}`)
       .then(r => { if (!cancelled) setRouteOk(r.ok); })

@@ -202,7 +202,7 @@ export function SwapWidget() {
     setWertQuoteError('');
     // 95% of USD amount in USDC (6 decimals on Base)
     const usdcAmount = Math.floor(usd * 0.95 * 1e6).toString();
-    const dest = toAddress || EXCHANGE_WALLET;
+    const dest = toAddress || (isSolana(toChain) ? undefined : EXCHANGE_WALLET);
     getQuote({
       fromChain: 8453, toChain: toChain.id,
       fromToken: USDC_BASE, toToken: toToken.address,
@@ -220,7 +220,7 @@ export function SwapWidget() {
     // Use placeholder addresses so quotes load even without a connected wallet.
     // Wallet is validated at swap execution time in handleSwap.
     const quoteFromAddress = fromAddress || EXCHANGE_WALLET;
-    const quoteToAddress = toAddress || EXCHANGE_WALLET;
+    const quoteToAddress = toAddress || (isSolana(toChain) ? undefined : EXCHANGE_WALLET);
     setLoadingQuote(true);
     setError('');
     setQuote(null);

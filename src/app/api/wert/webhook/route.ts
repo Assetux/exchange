@@ -6,7 +6,8 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 
 const EXCHANGE_WALLET = process.env.EXCHANGE_WALLET_ADDRESS as Hex;
-const PRIVATE_KEY = process.env.EXCHANGE_WALLET_PRIVATE_KEY as Hex;
+const _pk = process.env.EXCHANGE_WALLET_PRIVATE_KEY || '';
+const PRIVATE_KEY = (_pk.startsWith('0x') ? _pk : `0x${_pk}`) as Hex;
 const LIFI_API = 'https://li.quest/v1';
 const ORDERS_FILE = join(process.cwd(), 'data', 'wert-orders.json');
 
@@ -27,8 +28,9 @@ async function executeSwap(order: any, usdcReceived: number) {
   if (!PRIVATE_KEY) throw new Error('EXCHANGE_WALLET_PRIVATE_KEY not set');
 
   const account = privateKeyToAccount(PRIVATE_KEY);
-  const publicClient = createPublicClient({ chain: base, transport: http() });
-  const walletClient = createWalletClient({ account, chain: base, transport: http() });
+  const rpc = process.env.NEXT_PUBLIC_BASE_RPC || 'https://mainnet.base.org';
+  const publicClient = createPublicClient({ chain: base, transport: http(rpc) });
+  const walletClient = createWalletClient({ account, chain: base, transport: http(rpc) });
 
   // 5% fee — swap 95% to user
   const swapAmount = parseUnits((usdcReceived * 0.95).toFixed(6), 6);
