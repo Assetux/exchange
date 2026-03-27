@@ -104,7 +104,7 @@ function useSolanaTokenBalance(token: Token | null, chain: Chain | null) {
   return balance;
 }
 
-export function SwapWidget() {
+export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainIds?: number[]; allowedSymbols?: string[] } = {}) {
   const { address: evmAddress, isConnected: evmConnected } = useConnection();
   const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient();
@@ -160,12 +160,14 @@ export function SwapWidget() {
 
   useEffect(() => {
     getChains().then(c => {
-      setChains(c);
-      const eth = c.find(x => x.id === 1) || c.find(x => x.chainType === 'EVM') || null;
-      const base = c.find(x => x.id === 8453) || null;
+      const filtered = allowedChainIds?.length ? c.filter(x => allowedChainIds.includes(x.id)) : c;
+      setChains(filtered);
+      const eth = filtered.find(x => x.id === 1) || filtered.find(x => x.chainType === 'EVM') || null;
+      const base = filtered.find(x => x.id === 8453) || null;
       setFromChain(eth);
       setToChain(base || eth);
     }).catch(console.error);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -173,18 +175,22 @@ export function SwapWidget() {
     setLoadingTokens(true);
     setFromToken(null);
     getTokens(fromChain.id).then(t => {
-      setFromTokens(t);
-      setFromToken(t[0] || null);
+      const filtered = allowedSymbols?.length ? t.filter(x => allowedSymbols.includes(x.symbol.toUpperCase())) : t;
+      setFromTokens(filtered);
+      setFromToken(filtered[0] || null);
     }).catch(console.error).finally(() => setLoadingTokens(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromChain, usdMode]);
 
   useEffect(() => {
     if (!toChain) return;
     setToToken(null);
     getTokens(toChain.id).then(t => {
-      setToTokens(t);
-      setToToken(t[0] || null);
+      const filtered = allowedSymbols?.length ? t.filter(x => allowedSymbols.includes(x.symbol.toUpperCase())) : t;
+      setToTokens(filtered);
+      setToToken(filtered[0] || null);
     }).catch(console.error);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toChain]);
 
   // Verify Base USDC → toToken route whenever USD mode params change
@@ -202,7 +208,7 @@ export function SwapWidget() {
     setWertQuoteError('');
     // 95% of USD amount in USDC (6 decimals on Base)
     const usdcAmount = Math.floor(usd * 0.95 * 1e6).toString();
-    const dest = toAddress || EXCHANGE_WALLET;
+    const dest = toAddress || (isSolana(toChain) ? undefined : EXCHANGE_WALLET);
     getQuote({
       fromChain: 8453, toChain: toChain.id,
       fromToken: USDC_BASE, toToken: toToken.address,
@@ -220,7 +226,7 @@ export function SwapWidget() {
     // Use placeholder addresses so quotes load even without a connected wallet.
     // Wallet is validated at swap execution time in handleSwap.
     const quoteFromAddress = fromAddress || EXCHANGE_WALLET;
-    const quoteToAddress = toAddress || EXCHANGE_WALLET;
+    const quoteToAddress = toAddress || (isSolana(toChain) ? undefined : EXCHANGE_WALLET);
     setLoadingQuote(true);
     setError('');
     setQuote(null);

@@ -23,6 +23,9 @@ export function Navbar() {
         <Button component={Link} href="/listing" sx={{ color: 'text.secondary', '&:hover': { color: 'primary.main' } }}>
           List Token
         </Button>
+        <Button component={Link} href="/widget" sx={{ color: 'text.secondary', '&:hover': { color: 'primary.main' } }}>
+          Widget
+        </Button>
 
         <ConnectButton chainStatus="none" showBalance={false} />
       </Toolbar>
