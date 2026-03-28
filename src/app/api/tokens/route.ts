@@ -119,7 +119,6 @@ const AABTC_ADDRESSES = new Set([
   '0x5bcf2be3bf0243655f121c85763a0a063bb8152c', // ETH / ARB
   '0x9cd7ec05f483069353f4e487dabe644306014963', // Base / World
   '0x6f7a6a45b7bb844b6f037681a8d7aae3ca42ce57', // BSC
-  'cyaiYgJhfSuFY7yz8iNeBwsD1XNDzZXVBEGubuuxdma', // Solana
 ]);
 
 function applyLogoOverrides(tokens: any[]): any[] {
