@@ -113,6 +113,24 @@ const DEFAULTS: Record<string, string[]> = {
   ],
 };
 
+// aaaBTC logo override — applies to all known contract addresses and the symbol
+const AABTC_LOGO = 'https://greenfield-sp.defibit.io/view/aaa/BTC.png';
+const AABTC_ADDRESSES = new Set([
+  '0x5bcf2be3bf0243655f121c85763a0a063bb8152c', // ETH / ARB
+  '0x9cd7ec05f483069353f4e487dabe644306014963', // Base / World
+  '0x6f7a6a45b7bb844b6f037681a8d7aae3ca42ce57', // BSC
+  'cyaiYgJhfSuFY7yz8iNeBwsD1XNDzZXVBEGubuuxdma', // Solana
+]);
+
+function applyLogoOverrides(tokens: any[]): any[] {
+  return tokens.map(t => {
+    if (AABTC_ADDRESSES.has(t.address?.toLowerCase()) || AABTC_ADDRESSES.has(t.address) || t.symbol === 'aaaBTC') {
+      return { ...t, logoURI: AABTC_LOGO };
+    }
+    return t;
+  });
+}
+
 // Stable symbols to keep when falling back to LiFi token list
 const STABLE_SYMBOLS = new Set(['USDC', 'USDT', 'USDC.e', 'USDCe', 'USDB', 'DAI', 'FRAX', 'LUSD']);
 const NATIVE = '0x0000000000000000000000000000000000000000';
@@ -177,7 +195,7 @@ export async function GET(req: NextRequest) {
         };
       })
     );
-    return NextResponse.json(results.filter(Boolean));
+    return NextResponse.json(applyLogoOverrides(results.filter(Boolean)));
   }
 
   // Unknown chain: dynamically fetch native + stablecoins from LiFi
@@ -189,5 +207,5 @@ export async function GET(req: NextRequest) {
   const seen = new Set(fallback.map((t: any) => t.address?.toLowerCase()));
   const extra = listedMeta.filter(m => m && !seen.has(m.address?.toLowerCase()));
 
-  return NextResponse.json([...fallback, ...extra].filter(Boolean));
+  return NextResponse.json(applyLogoOverrides([...fallback, ...extra].filter(Boolean)));
 }

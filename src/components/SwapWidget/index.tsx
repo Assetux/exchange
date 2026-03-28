@@ -31,6 +31,8 @@ const NATIVE = '0x0000000000000000000000000000000000000000';
 const USD_CHAIN_ID = -1;
 const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const EXCHANGE_WALLET = '0xE6d194fbeF9215976a80D4479A3caFf0caf14BD1';
+// Solana system program — valid placeholder address for unauthenticated quote requests
+const SOLANA_PLACEHOLDER = '11111111111111111111111111111111';
 
 function useTokenBalance(
   evmAddress: `0x${string}` | undefined,
@@ -208,7 +210,7 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
     setWertQuoteError('');
     // 95% of USD amount in USDC (6 decimals on Base)
     const usdcAmount = Math.floor(usd * 0.95 * 1e6).toString();
-    const dest = toAddress || (isSolana(toChain) ? undefined : EXCHANGE_WALLET);
+    const dest = toAddress || (isSolana(toChain) ? SOLANA_PLACEHOLDER : EXCHANGE_WALLET);
     getQuote({
       fromChain: 8453, toChain: toChain.id,
       fromToken: USDC_BASE, toToken: toToken.address,
@@ -226,7 +228,7 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
     // Use placeholder addresses so quotes load even without a connected wallet.
     // Wallet is validated at swap execution time in handleSwap.
     const quoteFromAddress = fromAddress || EXCHANGE_WALLET;
-    const quoteToAddress = toAddress || (isSolana(toChain) ? undefined : EXCHANGE_WALLET);
+    const quoteToAddress = toAddress || (isSolana(toChain) ? SOLANA_PLACEHOLDER : EXCHANGE_WALLET);
     setLoadingQuote(true);
     setError('');
     setQuote(null);
