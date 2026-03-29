@@ -142,6 +142,7 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
   const [wertQuote, setWertQuote] = useState<Quote | null>(null);
   const [wertQuoteLoading, setWertQuoteLoading] = useState(false);
   const [wertQuoteError, setWertQuoteError] = useState('');
+  const [wertUrl, setWertUrl] = useState<string | null>(null);
 
   const [fromChainOpen, setFromChainOpen] = useState(false);
   const [toChainOpen, setToChainOpen] = useState(false);
@@ -399,9 +400,7 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
         toChain: toChain.id,
         toWallet: destWallet,
       });
-      const popup = window.open(payment_url, 'WertPayment', 'width=500,height=700,left=400,top=100');
-      if (!popup) window.location.href = payment_url;
-      setSuccess('Payment window opened. After payment, tokens are swapped and sent to your wallet.');
+      setWertUrl(payment_url);
     } catch (e: any) { setError(e.message); }
     finally { setCardLoading(false); }
   };
@@ -466,6 +465,19 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
 
   return (
     <>
+      {/* Wert payment overlay — iframe avoids popup blockers and origin issues */}
+      {wertUrl && (
+        <Box sx={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.85)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+          <Box sx={{ position: 'relative', width: { xs: '100%', sm: 480 }, height: { xs: '100%', sm: 700 }, maxHeight: '100vh', borderRadius: { xs: 0, sm: 3 }, overflow: 'hidden', background: '#fff' }}>
+            <Button onClick={() => setWertUrl(null)} sx={{ position: 'absolute', top: 8, right: 8, zIndex: 1, minWidth: 0, color: '#000', background: 'rgba(255,255,255,0.9)', borderRadius: '50%', p: 0.5 }}>✕</Button>
+            <iframe
+              src={wertUrl}
+              style={{ width: '100%', height: '100%', border: 'none' }}
+              allow="camera *; microphone *; payment *; clipboard-write"
+            />
+          </Box>
+        </Box>
+      )}
       <Paper elevation={0} sx={{ p: 3, borderRadius: 3, background: '#0f0c26', border: '1px solid rgba(255,255,255,0.07)', maxWidth: 480, width: '100%' }}>
         <Typography variant="h6" fontWeight={700} mb={2}>Swap</Typography>
 
