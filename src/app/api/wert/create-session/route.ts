@@ -62,10 +62,7 @@ export async function POST(req: NextRequest) {
       createdAt: new Date().toISOString(),
     });
 
-    const payment_url =
-      `https://widget.wert.io/${WERT_PARTNER_ID}/widget` +
-      `?session_id=${data.sessionId}&click_id=${orderId}` +
-      `&redirect_url=${encodeURIComponent(SITE_URL)}&widget_layout_mode=Modal`;
+    const payment_url = `https://widget.wert.io/${WERT_PARTNER_ID}/widget?session_id=${data.sessionId}`;
 
     return NextResponse.json({ orderId, payment_url });
   } catch (e) {

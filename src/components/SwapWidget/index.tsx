@@ -388,7 +388,8 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
   };
 
   const handleCardBuy = async () => {
-    if (!toChain || !toToken || !fromAmount || !evmAddress) return;
+    const destWallet = isSolana(toChain) ? solPublicKey?.toBase58() : evmAddress;
+    if (!toChain || !toToken || !fromAmount || !destWallet) return;
     setCardLoading(true);
     setError('');
     try {
@@ -396,7 +397,7 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
         usdAmount: parseFloat(fromAmount),
         toToken: toToken.address,
         toChain: toChain.id,
-        toWallet: evmAddress,
+        toWallet: destWallet,
       });
       const popup = window.open(payment_url, 'WertPayment', 'width=500,height=700,left=400,top=100');
       if (!popup) window.location.href = payment_url;
