@@ -20,7 +20,8 @@ import { getWalletClient, getPublicClient } from '@wagmi/core';
 import { parseUnits, formatUnits, erc20Abi } from 'viem';
 import { useWallet as useSolanaWallet, useConnection as useSolanaConnection } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
-import { PublicKey, LAMPORTS_PER_SOL, VersionedTransaction, Transaction } from '@solana/web3.js';
+import { PublicKey, LAMPORTS_PER_SOL, VersionedTransaction, Transaction, SystemProgram } from '@solana/web3.js';
+import { getAssociatedTokenAddressSync, createAssociatedTokenAccountInstruction, createSyncNativeInstruction } from '@solana/spl-token';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { getChains, getTokens, getQuote, formatAmount, isSolana, type Chain, type Token, type Quote } from '@/lib/lifi';
 import { ChainSelectModal } from './ChainSelectModal';
@@ -284,6 +285,42 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
       const tx = quote.transactionRequest;
       if (isSolana(fromChain)) {
         if (!solPublicKey) throw new Error('Connect Solana wallet');
+
+        // If fromToken is wSOL, ensure the ATA exists and has enough balance.
+        // LiFi's transaction assumes the wSOL ATA is already initialized — the SDK
+        // handles this automatically; we must do it manually with the raw API.
+        const WSOL = 'So11111111111111111111111111111111111111112';
+        if (fromToken?.address === WSOL) {
+          const wsolMint = new PublicKey(WSOL);
+          const ata = getAssociatedTokenAddressSync(wsolMint, solPublicKey);
+          const [ataInfo, { blockhash }] = await Promise.all([
+            solanaConnection.getAccountInfo(ata),
+            solanaConnection.getLatestBlockhash(),
+          ]);
+
+          let currentWsol = BigInt(0);
+          if (ataInfo) {
+            const bal = await solanaConnection.getTokenAccountBalance(ata);
+            currentWsol = BigInt(bal.value.amount);
+          }
+
+          const required = BigInt(quote.action.fromAmount);
+          const wrapIxs = [];
+          if (!ataInfo) {
+            wrapIxs.push(createAssociatedTokenAccountInstruction(solPublicKey, ata, solPublicKey, wsolMint));
+          }
+          if (required > currentWsol) {
+            wrapIxs.push(SystemProgram.transfer({ fromPubkey: solPublicKey, toPubkey: ata, lamports: required - currentWsol }));
+            wrapIxs.push(createSyncNativeInstruction(ata));
+          }
+          if (wrapIxs.length > 0) {
+            const wrapTx = new Transaction({ recentBlockhash: blockhash, feePayer: solPublicKey });
+            wrapTx.add(...wrapIxs);
+            const wrapSig = await sendSolanaTransaction(wrapTx, solanaConnection);
+            await solanaConnection.confirmTransaction(wrapSig, 'confirmed');
+          }
+        }
+
         const rawData = (quote.transactionRequest as any)?.data as string | undefined;
         if (!rawData) throw new Error('No transaction data returned by LiFi');
         const txBytes = Uint8Array.from(atob(rawData.replace(/^0x/, '')), c => c.charCodeAt(0));
