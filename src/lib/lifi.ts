@@ -98,5 +98,6 @@ export async function getQuote(params: {
 
 export function formatAmount(amount: string, decimals: number): string {
   const n = Number(BigInt(amount)) / 10 ** decimals;
-  return n.toLocaleString(undefined, { maximumFractionDigits: 6 });
+  // Use plain string (no locale separators) so the value can be fed back into parseUnits
+  return parseFloat(n.toFixed(6)).toString();
 }

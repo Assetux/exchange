@@ -20,7 +20,7 @@ import { getWalletClient, getPublicClient } from '@wagmi/core';
 import { parseUnits, formatUnits, erc20Abi } from 'viem';
 import { useWallet as useSolanaWallet, useConnection as useSolanaConnection } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
-import { PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { PublicKey, LAMPORTS_PER_SOL, VersionedTransaction, Transaction } from '@solana/web3.js';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { getChains, getTokens, getQuote, formatAmount, isSolana, type Chain, type Token, type Quote } from '@/lib/lifi';
 import { ChainSelectModal } from './ChainSelectModal';
@@ -112,7 +112,8 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
   const publicClient = usePublicClient();
   const { mutateAsync: switchChainAsync } = useSwitchChain();
   const wagmiConfig = useConfig();
-  const { publicKey: solPublicKey, connected: solConnected } = useSolanaWallet();
+  const { publicKey: solPublicKey, connected: solConnected, sendTransaction: sendSolanaTransaction } = useSolanaWallet();
+  const { connection: solanaConnection } = useSolanaConnection();
 
   const [chains, setChains] = useState<Chain[]>([]);
   const [usdMode, setUsdMode] = useState(false);
@@ -281,7 +282,23 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
     setError('');
     try {
       const tx = quote.transactionRequest;
-      if (isSolana(fromChain)) throw new Error('Solana swap execution coming soon');
+      if (isSolana(fromChain)) {
+        if (!solPublicKey) throw new Error('Connect Solana wallet');
+        const rawData = (quote.transactionRequest as any)?.data as string | undefined;
+        if (!rawData) throw new Error('No transaction data returned by LiFi');
+        const txBytes = Uint8Array.from(atob(rawData.replace(/^0x/, '')), c => c.charCodeAt(0));
+        let solTx: VersionedTransaction | Transaction;
+        try {
+          solTx = VersionedTransaction.deserialize(txBytes);
+        } catch {
+          solTx = Transaction.from(txBytes);
+        }
+        const sig = await sendSolanaTransaction(solTx, solanaConnection);
+        await solanaConnection.confirmTransaction(sig, 'confirmed');
+        setSuccess(`Swapped! ${sig.slice(0, 16)}…`);
+        setSwapping(false);
+        return;
+      }
       if (!evmAddress) throw new Error('Connect EVM wallet');
 
       const targetChainId = tx.chainId as number;
