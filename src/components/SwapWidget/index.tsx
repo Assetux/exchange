@@ -709,14 +709,16 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
         {/* CTA */}
         {usdMode ? (
           <>
-            {!evmConnected && (
+            {!( toIsSolana ? solConnected : evmConnected) && (
               <Box sx={{ mb: 2, display: 'flex', justifyContent: 'center' }}>
-                <ConnectButton label="Connect Wallet to Buy" />
+                {toIsSolana
+                  ? <WalletMultiButton style={{ background: 'linear-gradient(135deg,#489EFF,#9166FF)', borderRadius: 12, height: 44 }} />
+                  : <ConnectButton label="Connect Wallet to Buy" />}
               </Box>
             )}
             <Button variant="contained" fullWidth size="large"
               onClick={handleCardBuy}
-              disabled={cardLoading || !fromAmount || parseFloat(fromAmount) < 10 || !toToken || !evmConnected || !wertQuote || wertQuoteLoading}
+              disabled={cardLoading || !fromAmount || parseFloat(fromAmount) < 10 || !toToken || !(toIsSolana ? solConnected : evmConnected) || !wertQuote || wertQuoteLoading}
               sx={{ borderRadius: 2, py: 1.5, fontWeight: 700 }}>
               {cardLoading ? <CircularProgress size={22} color="inherit" />
                 : wertQuoteLoading ? <><CircularProgress size={20} color="inherit" sx={{ mr: 1 }} />Checking route…</>
