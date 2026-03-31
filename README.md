@@ -11,6 +11,7 @@ A multi-chain token swap platform supporting 25+ EVM networks and Solana. Swap a
 - **Buy with card** — Visa/Mastercard onramp via Wert: pay USD, receive any supported token in your wallet
 - **List a token** — submit any token for listing by paying a 10,000,000 ASX fee on Solana; verified on-chain automatically
 - **Non-custodial** — swaps execute from user wallets directly; no funds held
+- **Solana token API** — generic endpoints for any SPL token: on-chain balance per wallet and live market stats (price, 24h volume, liquidity) via DexScreener
 
 ---
 
@@ -110,3 +111,67 @@ The app uses [NowNodes](https://nownodes.io) for most chains and [Alchemy](https
 - **Solana wallets** — Phantom, Solflare via `@solana/wallet-adapter`
 - **Fiat onramp** — Wert webhook triggers backend swap: card payment → USDC on Base → swap to destination token (5% service fee)
 - **Token listings** — stored in `/data/listings.json`; on-chain Solana transaction verified before listing is added
+- **Solana token API** — dynamic routes at `/api/solana/[address]/stats` and `/api/solana/[address]/balance`; hooks `useSolanaTokenStats(mint)` and `useSolanaTokenBalance(mint, wallet)` in `src/hooks/useAsxStats.ts`
+
+---
+
+## Solana Token API
+
+Two server-side API routes work for **any Solana SPL or Token-2022 mint**:
+
+### `GET /api/solana/:address/stats`
+
+Returns live market data from DexScreener and the treasury balance from Solana RPC.
+
+```
+GET /api/solana/cyaiYgJhfSuFY7yz8iNeBwsD1XNDzZXVBEGubuuxdma/stats
+```
+
+Response:
+```json
+{
+  "mint": "cyaiYg...",
+  "priceUsd": "0.000123",
+  "volume24h": 45200,
+  "priceChange24h": 3.7,
+  "liquidity": 180000,
+  "dex": "raydium",
+  "pairAddress": "...",
+  "treasuryBalance": "38200000"
+}
+```
+
+Cached 5 minutes (`s-maxage=300`). Picks the highest-volume Solana pair on DexScreener.
+
+### `GET /api/solana/:address/balance?wallet=:pubkey`
+
+Returns the SPL token balance for a given wallet.
+
+```
+GET /api/solana/cyaiYgJhfSuFY7yz8iNeBwsD1XNDzZXVBEGubuuxdma/balance?wallet=6bvB3PTz48wozyPJeuTB77axexWu9MfUSjBYbQzEgK88
+```
+
+Response:
+```json
+{
+  "wallet": "6bvB3P...",
+  "mint": "cyaiYg...",
+  "balance": "38200000"
+}
+```
+
+Cached 30 seconds.
+
+### React hooks
+
+```ts
+import { useSolanaTokenStats, useSolanaTokenBalance, useAsxStats, useAsxBalance } from '@/hooks/useAsxStats';
+
+// Generic — any mint
+const { stats } = useSolanaTokenStats('cyaiYg...');
+const { balance } = useSolanaTokenBalance('cyaiYg...', wallet);
+
+// ASX convenience wrappers (mint pre-filled)
+const { stats } = useAsxStats();
+const { balance } = useAsxBalance(wallet);
+```

@@ -35,6 +35,7 @@ import {
 } from '@solana/spl-token';
 import { useWallet, useConnection as useSolanaConnection } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
+import { useAsxStats, useAsxBalance } from '@/hooks/useAsxStats';
 import { createPublicClient, http, erc20Abi, isAddress, defineChain, type Chain } from 'viem';
 
 const LIFI_BASE = 'https://li.quest/v1';
@@ -196,6 +197,13 @@ async function fetchSolanaMeta(address: string, connection: Connection): Promise
 export function ListingPage() {
   const { publicKey, signMessage, signTransaction, connected } = useWallet();
   const { connection } = useSolanaConnection();
+
+  const { stats: asxStats } = useAsxStats();
+  const { balance: asxBalance } = useAsxBalance(connected && publicKey ? publicKey.toBase58() : null);
+
+  const feeUsd = asxStats?.priceUsd
+    ? (LISTING_FEE * Number(asxStats.priceUsd)).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
+    : null;
 
   const [network, setNetwork] = useState(1);
   const [networkModalOpen, setNetworkModalOpen] = useState(false);
@@ -513,8 +521,46 @@ export function ListingPage() {
 
             <Box sx={{ p: 2, borderRadius: 2, background: 'rgba(72,158,255,0.06)', border: '1px solid rgba(72,158,255,0.15)' }}>
               <Typography variant="body2" fontWeight={600}>Listing Fee</Typography>
-              <Typography variant="h5" fontWeight={800}>10,000,000 ASX</Typography>
+              <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1.5, flexWrap: 'wrap' }}>
+                <Typography variant="h5" fontWeight={800}>10,000,000 ASX</Typography>
+                {feeUsd && (
+                  <Typography variant="body2" color="text.secondary">≈ {feeUsd}</Typography>
+                )}
+              </Box>
               <Typography variant="caption" color="text.secondary">Paid from your Solana wallet · Non-refundable</Typography>
+              {asxStats && (
+                <Box sx={{ display: 'flex', gap: 2, mt: 1, flexWrap: 'wrap' }}>
+                  {asxStats.priceUsd && (
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" display="block">ASX Price</Typography>
+                      <Typography variant="caption" fontWeight={600}>
+                        ${Number(asxStats.priceUsd).toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 6 })}
+                        {asxStats.priceChange24h != null && (
+                          <Box component="span" sx={{ ml: 0.5, color: asxStats.priceChange24h >= 0 ? '#4caf50' : '#f44336' }}>
+                            ({asxStats.priceChange24h >= 0 ? '+' : ''}{asxStats.priceChange24h.toFixed(2)}%)
+                          </Box>
+                        )}
+                      </Typography>
+                    </Box>
+                  )}
+                  {asxStats.volume24h != null && (
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" display="block">24h Volume</Typography>
+                      <Typography variant="caption" fontWeight={600}>
+                        ${asxStats.volume24h.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                      </Typography>
+                    </Box>
+                  )}
+                  {asxBalance != null && (
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" display="block">Your ASX Balance</Typography>
+                      <Typography variant="caption" fontWeight={600}>
+                        {Number(asxBalance).toLocaleString('en-US', { maximumFractionDigits: 2 })} ASX
+                      </Typography>
+                    </Box>
+                  )}
+                </Box>
+              )}
             </Box>
 
             {error && <Alert severity="error">{error}</Alert>}
