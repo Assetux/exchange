@@ -210,6 +210,8 @@ export function ListingPage() {
   const [logoMap, setLogoMap] = useState<Record<number, string>>({});
   const [tokenAddress, setTokenAddress] = useState('');
   const [meta, setMeta] = useState<TokenMeta | null>(null);
+  const [manualName, setManualName] = useState('');
+  const [manualSymbol, setManualSymbol] = useState('');
 
   // Fetch chain logos from LiFi once on mount
   useEffect(() => {
@@ -241,6 +243,8 @@ export function ListingPage() {
     const addr = tokenAddress.trim();
     setMeta(null);
     setMetaError('');
+    setManualName('');
+    setManualSymbol('');
 
     if (!addr) return;
 
@@ -305,8 +309,10 @@ export function ListingPage() {
       setError('Enter a valid token address and wait for metadata to load');
       return;
     }
-    if (!meta.name || !meta.symbol) {
-      setError('Token name/symbol could not be resolved on-chain. Enter them manually or check the address.');
+    const resolvedName = meta.name || manualName.trim();
+    const resolvedSymbol = meta.symbol || manualSymbol.trim();
+    if (!resolvedName || !resolvedSymbol) {
+      setError('Token name/symbol could not be resolved on-chain. Enter them manually below.');
       return;
     }
     if (!connected || !publicKey || !signMessage || !signTransaction) {
@@ -323,8 +329,8 @@ export function ListingPage() {
         action: 'list_token',
         tokenAddress: tokenAddress.trim(),
         network,
-        tokenName: meta.name,
-        tokenSymbol: meta.symbol,
+        tokenName: resolvedName,
+        tokenSymbol: resolvedSymbol,
         tokenDecimals: meta.decimals,
         wallet: publicKey.toBase58(),
         timestamp: Date.now(),
@@ -337,7 +343,7 @@ export function ListingPage() {
       return;
     }
 
-    // Step 2: send 1M ASX + memo
+    // Step 2: send 10M ASX + memo
     setStep(2);
     try {
       const fromATA = await getAssociatedTokenAddress(
@@ -403,7 +409,7 @@ export function ListingPage() {
       </Typography>
 
       <Stepper activeStep={step} sx={{ mb: 4 }}>
-        {['Fill details', 'Sign message', 'Pay 1M ASX', 'Listed!'].map(l => (
+        {['Fill details', 'Sign message', 'Pay 10M ASX', 'Listed!'].map(l => (
           <Step key={l}><StepLabel>{l}</StepLabel></Step>
         ))}
       </Stepper>
@@ -445,7 +451,7 @@ export function ListingPage() {
             <NetworkSelectModal
               open={networkModalOpen}
               onClose={() => setNetworkModalOpen(false)}
-              onSelect={id => { setNetwork(id); setTokenAddress(''); setMeta(null); setRouteOk(null); }}
+              onSelect={id => { setNetwork(id); setTokenAddress(''); setMeta(null); setRouteOk(null); setManualName(''); setManualSymbol(''); }}
               logoMap={logoMap}
             />
 
@@ -468,13 +474,21 @@ export function ListingPage() {
                 </Typography>
                 <Box sx={{ display: 'flex', gap: 2 }}>
                   <TextField
-                    label="Name" value={meta.name || '—'} fullWidth size="small"
-                    slotProps={{ input: { readOnly: true } }}
+                    label="Name"
+                    value={meta.name ? meta.name : manualName}
+                    onChange={meta.name ? undefined : (e) => setManualName(e.target.value)}
+                    fullWidth size="small"
+                    slotProps={{ input: { readOnly: !!meta.name } }}
+                    placeholder={meta.name ? undefined : 'Enter token name'}
                     sx={{ '& .MuiOutlinedInput-root': { background: 'rgba(255,255,255,0.03)' } }}
                   />
                   <TextField
-                    label="Symbol" value={meta.symbol || '—'} fullWidth size="small"
-                    slotProps={{ input: { readOnly: true } }}
+                    label="Symbol"
+                    value={meta.symbol ? meta.symbol : manualSymbol}
+                    onChange={meta.symbol ? undefined : (e) => setManualSymbol(e.target.value)}
+                    fullWidth size="small"
+                    slotProps={{ input: { readOnly: !!meta.symbol } }}
+                    placeholder={meta.symbol ? undefined : 'Enter symbol'}
                     sx={{ '& .MuiOutlinedInput-root': { background: 'rgba(255,255,255,0.03)' } }}
                   />
                   <TextField
@@ -565,7 +579,7 @@ export function ListingPage() {
 
             {error && <Alert severity="error">{error}</Alert>}
             {step === 1 && <Alert severity="info">Waiting for message signature in your wallet…</Alert>}
-            {step === 2 && <Alert severity="info">Sending 1M ASX and verifying on-chain…</Alert>}
+            {step === 2 && <Alert severity="info">Sending 10M ASX and verifying on-chain…</Alert>}
 
             {!connected ? (
               <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>

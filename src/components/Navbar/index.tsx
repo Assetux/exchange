@@ -5,9 +5,14 @@ import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Link from 'next/link';
 import Image from 'next/image';
+import { usePathname } from 'next/navigation';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 
 export function Navbar() {
+  const pathname = usePathname();
+  const isListing = pathname === '/listing';
+
   return (
     <AppBar position="sticky" elevation={0} sx={{ background: 'rgba(8,6,26,0.85)', backdropFilter: 'blur(12px)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
       <Toolbar sx={{ gap: 2 }}>
@@ -27,7 +32,9 @@ export function Navbar() {
           Widget
         </Button>
 
-        <ConnectButton chainStatus="none" showBalance={false} />
+        {isListing
+          ? <WalletMultiButton style={{ background: 'linear-gradient(135deg,#489EFF,#9166FF)', borderRadius: 12 }} />
+          : <ConnectButton chainStatus="none" showBalance={false} />}
       </Toolbar>
     </AppBar>
   );
