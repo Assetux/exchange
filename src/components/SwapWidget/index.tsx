@@ -29,6 +29,30 @@ import { TokenSelectModal } from './TokenSelectModal';
 import { createWertSession } from '@/lib/wert';
 
 const NATIVE = '0x0000000000000000000000000000000000000000';
+
+export interface WidgetTheme {
+  pageBg: string;
+  cardBg: string;
+  inputBg: string;
+  fontColor: string;
+  borderColor: string;
+}
+
+export const DEFAULT_WIDGET_THEME: WidgetTheme = {
+  pageBg: '#08061a',
+  cardBg: '#0f0c26',
+  inputBg: '#08061a',
+  fontColor: '#ffffff',
+  borderColor: '#ffffff',
+};
+
+function withAlpha(hex: string, alpha: number): string {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
 const USD_CHAIN_ID = -1;
 const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const EXCHANGE_WALLET = '0xE6d194fbeF9215976a80D4479A3caFf0caf14BD1';
@@ -107,7 +131,8 @@ function useSolanaTokenBalance(token: Token | null, chain: Chain | null) {
   return balance;
 }
 
-export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainIds?: number[]; allowedSymbols?: string[] } = {}) {
+export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }: { allowedChainIds?: number[]; allowedSymbols?: string[]; theme?: Partial<WidgetTheme> } = {}) {
+  const T = { ...DEFAULT_WIDGET_THEME, ...themeProp };
   const { address: evmAddress, isConnected: evmConnected } = useConnection();
   const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient();
@@ -483,19 +508,19 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
           </Box>
         </Box>
       )}
-      <Paper elevation={0} sx={{ p: 3, borderRadius: 3, background: '#0f0c26', border: '1px solid rgba(255,255,255,0.07)', maxWidth: 480, width: '100%' }}>
-        <Typography variant="h6" fontWeight={700} mb={2}>Swap</Typography>
+      <Paper elevation={0} sx={{ p: 3, borderRadius: 3, background: T.cardBg, border: `1px solid ${withAlpha(T.borderColor, 0.1)}`, maxWidth: 480, width: '100%' }}>
+        <Typography variant="h6" fontWeight={700} mb={2} sx={{ color: T.fontColor }}>Swap</Typography>
 
         {/* FROM */}
-        <Box sx={{ p: 2, borderRadius: 2, background: '#08061a', border: '1px solid rgba(255,255,255,0.06)', mb: 1 }}>
-          <Typography variant="caption" color="text.secondary" mb={1.5} display="block">From</Typography>
+        <Box sx={{ p: 2, borderRadius: 2, background: T.inputBg, border: `1px solid ${withAlpha(T.borderColor, 0.08)}`, mb: 1 }}>
+          <Typography variant="caption" mb={1.5} display="block" sx={{ color: withAlpha(T.fontColor, 0.5) }}>From</Typography>
           <Box sx={{ display: 'flex', gap: 1, mb: 1.5 }}>
             <ButtonBase onClick={() => setFromChainOpen(true)} sx={{
               display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 130,
               px: 1.25, py: 0.75, borderRadius: 2,
-              background: usdMode ? 'rgba(72,158,255,0.1)' : 'rgba(255,255,255,0.06)',
-              border: usdMode ? '1px solid rgba(72,158,255,0.3)' : '1px solid rgba(255,255,255,0.1)',
-              '&:hover': { background: 'rgba(255,255,255,0.1)' },
+              background: usdMode ? 'rgba(72,158,255,0.1)' : withAlpha(T.fontColor, 0.06),
+              border: usdMode ? '1px solid rgba(72,158,255,0.3)' : `1px solid ${withAlpha(T.borderColor, 0.12)}`,
+              '&:hover': { background: withAlpha(T.fontColor, 0.12) },
             }}>
               {usdMode
                 ? <><CreditCardIcon sx={{ fontSize: 20, color: 'primary.main' }} /><Typography variant="caption" fontWeight={700} color="primary.main">USD</Typography></>
@@ -510,8 +535,8 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
               <ButtonBase onClick={() => fromChain && setFromTokenOpen(true)} sx={{
                 display: 'flex', alignItems: 'center', gap: 0.75, flex: 1,
                 px: 1.25, py: 0.75, borderRadius: 2,
-                background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-                '&:hover': { background: 'rgba(255,255,255,0.1)' }, opacity: fromChain ? 1 : 0.4,
+                background: withAlpha(T.fontColor, 0.06), border: `1px solid ${withAlpha(T.borderColor, 0.12)}`,
+                '&:hover': { background: withAlpha(T.fontColor, 0.12) }, opacity: fromChain ? 1 : 0.4,
               }}>
                 {fromToken
                   ? <Avatar src={fromToken.logoURI} sx={{ width: 22, height: 22, fontSize: 11 }}>{fromToken.symbol[0]}</Avatar>
@@ -520,8 +545,8 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
                 <KeyboardArrowDownIcon sx={{ fontSize: 16, color: 'text.secondary', ml: 'auto' }} />
               </ButtonBase>
             ) : (
-              <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', px: 1.5, borderRadius: 2, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                <Typography variant="caption" color="text.secondary">Visa / Mastercard</Typography>
+              <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', px: 1.5, borderRadius: 2, background: withAlpha(T.fontColor, 0.03), border: `1px solid ${withAlpha(T.borderColor, 0.08)}` }}>
+                <Typography variant="caption" sx={{ color: withAlpha(T.fontColor, 0.5) }}>Visa / Mastercard</Typography>
               </Box>
             )}
           </Box>
@@ -551,23 +576,23 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
         {/* Swap arrow */}
         <Box sx={{ display: 'flex', justifyContent: 'center', my: 0.5 }}>
           <Box onClick={swapSides} sx={{
-            p: 0.75, borderRadius: '50%', background: '#1a1535', border: '2px solid #08061a',
+            p: 0.75, borderRadius: '50%', background: withAlpha(T.fontColor, 0.08), border: `2px solid ${T.inputBg}`,
             cursor: usdMode ? 'default' : 'pointer', opacity: usdMode ? 0.4 : 1,
-            '&:hover': { background: usdMode ? '#1a1535' : '#2a2050' },
+            '&:hover': { background: usdMode ? withAlpha(T.fontColor, 0.08) : withAlpha(T.fontColor, 0.15) },
           }}>
             <SwapVertIcon sx={{ color: 'primary.main', display: 'block' }} />
           </Box>
         </Box>
 
         {/* TO */}
-        <Box sx={{ p: 2, borderRadius: 2, background: '#08061a', border: '1px solid rgba(255,255,255,0.06)', mb: 2 }}>
-          <Typography variant="caption" color="text.secondary" mb={1.5} display="block">To</Typography>
+        <Box sx={{ p: 2, borderRadius: 2, background: T.inputBg, border: `1px solid ${withAlpha(T.borderColor, 0.08)}`, mb: 2 }}>
+          <Typography variant="caption" mb={1.5} display="block" sx={{ color: withAlpha(T.fontColor, 0.5) }}>To</Typography>
           <Box sx={{ display: 'flex', gap: 1, mb: 1.5 }}>
             <ButtonBase onClick={() => setToChainOpen(true)} sx={{
               display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 130,
               px: 1.25, py: 0.75, borderRadius: 2,
-              background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-              '&:hover': { background: 'rgba(255,255,255,0.1)' },
+              background: withAlpha(T.fontColor, 0.06), border: `1px solid ${withAlpha(T.borderColor, 0.12)}`,
+              '&:hover': { background: withAlpha(T.fontColor, 0.12) },
             }}>
               {toChain
                 ? <><Avatar src={toChain.logoURI} sx={{ width: 22, height: 22 }}>{toChain.name[0]}</Avatar>
@@ -579,8 +604,8 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
             <ButtonBase onClick={() => toChain && setToTokenOpen(true)} sx={{
               display: 'flex', alignItems: 'center', gap: 0.75, flex: 1,
               px: 1.25, py: 0.75, borderRadius: 2,
-              background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-              '&:hover': { background: 'rgba(255,255,255,0.1)' }, opacity: toChain ? 1 : 0.4,
+              background: withAlpha(T.fontColor, 0.06), border: `1px solid ${withAlpha(T.borderColor, 0.12)}`,
+              '&:hover': { background: withAlpha(T.fontColor, 0.12) }, opacity: toChain ? 1 : 0.4,
             }}>
               {toToken
                 ? <Avatar src={toToken.logoURI} sx={{ width: 22, height: 22, fontSize: 11 }}>{toToken.symbol[0]}</Avatar>

@@ -14,6 +14,7 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CheckIcon from '@mui/icons-material/Check';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import { getChains, type Chain } from '@/lib/lifi';
+import { DEFAULT_WIDGET_THEME } from '@/components/SwapWidget';
 
 const SITE = 'https://exchange.assetux.com';
 // Fetch token symbols from these representative chains
@@ -35,6 +36,13 @@ export default function WidgetPage() {
   const [searchChain, setSearchChain] = useState('');
   const [searchToken, setSearchToken] = useState('');
   const [tab, setTab] = useState(0);
+  const [colors, setColors] = useState({
+    c_page:   DEFAULT_WIDGET_THEME.pageBg.replace('#', ''),
+    c_card:   DEFAULT_WIDGET_THEME.cardBg.replace('#', ''),
+    c_input:  DEFAULT_WIDGET_THEME.inputBg.replace('#', ''),
+    c_font:   DEFAULT_WIDGET_THEME.fontColor.replace('#', ''),
+    c_border: DEFAULT_WIDGET_THEME.borderColor.replace('#', ''),
+  });
 
   useEffect(() => {
     getChains().then(c => {
@@ -71,6 +79,14 @@ export default function WidgetPage() {
     return allTokens.filter(t => t.symbol.toLowerCase().includes(searchToken.toLowerCase()));
   }, [allTokens, searchToken]);
 
+  const defaultColors = {
+    c_page:   DEFAULT_WIDGET_THEME.pageBg.replace('#', ''),
+    c_card:   DEFAULT_WIDGET_THEME.cardBg.replace('#', ''),
+    c_input:  DEFAULT_WIDGET_THEME.inputBg.replace('#', ''),
+    c_font:   DEFAULT_WIDGET_THEME.fontColor.replace('#', ''),
+    c_border: DEFAULT_WIDGET_THEME.borderColor.replace('#', ''),
+  };
+
   const queryString = useMemo(() => {
     const params = new URLSearchParams();
     if (selectedChainIds.size > 0 && selectedChainIds.size < chains.length) {
@@ -79,8 +95,14 @@ export default function WidgetPage() {
     if (selectedSymbols.size > 0 && selectedSymbols.size < allTokens.length) {
       params.set('tokens', [...selectedSymbols].join(','));
     }
+    (Object.keys(colors) as Array<keyof typeof colors>).forEach(key => {
+      if (colors[key] !== defaultColors[key]) {
+        params.set(key, colors[key]);
+      }
+    });
     return params.toString();
-  }, [selectedChainIds, chains.length, selectedSymbols, allTokens.length]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedChainIds, chains.length, selectedSymbols, allTokens.length, colors]);
 
   const previewUrl = `/embed${queryString ? '?' + queryString : ''}`;
   const embedUrl = `${SITE}/embed${queryString ? '?' + queryString : ''}`;
@@ -243,6 +265,58 @@ export default function WidgetPage() {
                 ? 'All tokens shown'
                 : `${selectedSymbols.size} of ${allTokens.length} tokens selected`}
             </Typography>
+          </Paper>
+
+          {/* Theme */}
+          <Paper sx={sectionSx}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
+              <Typography fontWeight={700}>Theme</Typography>
+              <Button size="small" onClick={() => setColors({
+                c_page:   DEFAULT_WIDGET_THEME.pageBg.replace('#', ''),
+                c_card:   DEFAULT_WIDGET_THEME.cardBg.replace('#', ''),
+                c_input:  DEFAULT_WIDGET_THEME.inputBg.replace('#', ''),
+                c_font:   DEFAULT_WIDGET_THEME.fontColor.replace('#', ''),
+                c_border: DEFAULT_WIDGET_THEME.borderColor.replace('#', ''),
+              })} sx={{ fontSize: 12, py: 0, color: 'primary.main' }}>
+                Reset
+              </Button>
+            </Box>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+              {([
+                { key: 'c_page',   label: 'Page background' },
+                { key: 'c_card',   label: 'Card background' },
+                { key: 'c_input',  label: 'Input background' },
+                { key: 'c_font',   label: 'Font color' },
+                { key: 'c_border', label: 'Border color' },
+              ] as { key: keyof typeof colors; label: string }[]).map(({ key, label }) => (
+                <Box key={key} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1, py: 0.75, borderRadius: 2, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)' }}>
+                  <Typography variant="body2">{label}</Typography>
+                  <Box
+                    component="label"
+                    sx={{ display: 'flex', alignItems: 'center', gap: 1, cursor: 'pointer' }}
+                  >
+                    <Box sx={{
+                      width: 28, height: 28, borderRadius: 1.5,
+                      background: `#${colors[key]}`,
+                      border: '2px solid rgba(255,255,255,0.15)',
+                      boxShadow: '0 0 0 1px rgba(0,0,0,0.3)',
+                    }} />
+                    <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary' }}>
+                      #{colors[key]}
+                    </Typography>
+                    <Box
+                      component="input"
+                      type="color"
+                      value={`#${colors[key]}`}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                        setColors(prev => ({ ...prev, [key]: e.target.value.replace('#', '') }))
+                      }
+                      sx={{ position: 'absolute', opacity: 0, width: 0, height: 0, pointerEvents: 'none' }}
+                    />
+                  </Box>
+                </Box>
+              ))}
+            </Box>
           </Paper>
 
           {/* Dimensions */}
