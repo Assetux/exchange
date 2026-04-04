@@ -16,15 +16,24 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import { getChains, type Chain } from '@/lib/lifi';
 
 const SITE = 'https://exchange.assetux.com';
+// Fetch token symbols from these representative chains
+const KEY_CHAIN_IDS = [1, 56, 137, 42161, 10, 1151111081099710];
+
+interface TokenSymbol {
+  symbol: string;
+  logoURI: string;
+}
 
 export default function WidgetPage() {
   const [chains, setChains] = useState<Chain[]>([]);
   const [selectedChainIds, setSelectedChainIds] = useState<Set<number>>(new Set());
-  const [tokenFilter, setTokenFilter] = useState('');
+  const [allTokens, setAllTokens] = useState<TokenSymbol[]>([]);
+  const [selectedSymbols, setSelectedSymbols] = useState<Set<string>>(new Set());
   const [width, setWidth] = useState('480');
   const [height, setHeight] = useState('600');
   const [copied, setCopied] = useState(false);
   const [searchChain, setSearchChain] = useState('');
+  const [searchToken, setSearchToken] = useState('');
   const [tab, setTab] = useState(0);
 
   useEffect(() => {
@@ -34,20 +43,44 @@ export default function WidgetPage() {
     }).catch(console.error);
   }, []);
 
+  useEffect(() => {
+    Promise.all(
+      KEY_CHAIN_IDS.map(cid =>
+        fetch(`/api/tokens?chainId=${cid}`).then(r => r.json()).catch(() => [])
+      )
+    ).then(results => {
+      const seen = new Map<string, string>(); // symbol -> logoURI
+      (results as any[][]).flat().forEach((t: any) => {
+        if (t?.symbol && !seen.has(t.symbol)) {
+          seen.set(t.symbol, t.logoURI || '');
+        }
+      });
+      const list = [...seen.entries()].map(([symbol, logoURI]) => ({ symbol, logoURI }));
+      setAllTokens(list);
+      setSelectedSymbols(new Set(list.map(t => t.symbol)));
+    });
+  }, []);
+
   const filteredChains = useMemo(() => {
     if (!searchChain) return chains;
     return chains.filter(c => c.name.toLowerCase().includes(searchChain.toLowerCase()));
   }, [chains, searchChain]);
+
+  const filteredTokens = useMemo(() => {
+    if (!searchToken) return allTokens;
+    return allTokens.filter(t => t.symbol.toLowerCase().includes(searchToken.toLowerCase()));
+  }, [allTokens, searchToken]);
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams();
     if (selectedChainIds.size > 0 && selectedChainIds.size < chains.length) {
       params.set('chains', [...selectedChainIds].join(','));
     }
-    const trimmed = tokenFilter.trim();
-    if (trimmed) params.set('tokens', trimmed);
+    if (selectedSymbols.size > 0 && selectedSymbols.size < allTokens.length) {
+      params.set('tokens', [...selectedSymbols].join(','));
+    }
     return params.toString();
-  }, [selectedChainIds, chains.length, tokenFilter]);
+  }, [selectedChainIds, chains.length, selectedSymbols, allTokens.length]);
 
   const previewUrl = `/embed${queryString ? '?' + queryString : ''}`;
   const embedUrl = `${SITE}/embed${queryString ? '?' + queryString : ''}`;
@@ -84,6 +117,42 @@ export default function WidgetPage() {
     }
   };
 
+  const toggleSymbol = (symbol: string) => {
+    setSelectedSymbols(prev => {
+      const next = new Set(prev);
+      if (next.has(symbol)) next.delete(symbol); else next.add(symbol);
+      return next;
+    });
+  };
+
+  const toggleAllTokens = () => {
+    if (selectedSymbols.size === allTokens.length) {
+      setSelectedSymbols(new Set());
+    } else {
+      setSelectedSymbols(new Set(allTokens.map(t => t.symbol)));
+    }
+  };
+
+  const sectionSx = {
+    p: 2.5,
+    background: '#0f0c26',
+    border: '1px solid rgba(255,255,255,0.07)',
+    borderRadius: 3,
+  };
+
+  const searchSx = {
+    mb: 1.5,
+    '& .MuiOutlinedInput-root': { background: 'rgba(255,255,255,0.04)', borderRadius: 2 },
+  };
+
+  const rowSx = (selected: boolean) => ({
+    display: 'flex', alignItems: 'center', gap: 1.5, px: 1, py: 0.75,
+    borderRadius: 2, cursor: 'pointer',
+    background: selected ? 'rgba(72,158,255,0.07)' : 'transparent',
+    '&:hover': { background: selected ? 'rgba(72,158,255,0.12)' : 'rgba(255,255,255,0.04)' },
+    transition: 'background 0.15s',
+  });
+
   return (
     <Box sx={{ maxWidth: 1280, mx: 'auto', px: { xs: 2, md: 4 }, py: 6 }}>
       <Typography variant="h4" fontWeight={900} mb={1}
@@ -100,7 +169,7 @@ export default function WidgetPage() {
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
 
           {/* Networks */}
-          <Paper sx={{ p: 2.5, background: '#0f0c26', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 3 }}>
+          <Paper sx={sectionSx}>
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
               <Typography fontWeight={700}>Networks</Typography>
               <Button size="small" onClick={toggleAll} sx={{ fontSize: 12, py: 0, color: 'primary.main' }}>
@@ -110,20 +179,14 @@ export default function WidgetPage() {
             <TextField
               size="small" fullWidth placeholder="Search networks…"
               value={searchChain} onChange={e => setSearchChain(e.target.value)}
-              sx={{ mb: 1.5, '& .MuiOutlinedInput-root': { background: 'rgba(255,255,255,0.04)', borderRadius: 2 } }}
+              sx={searchSx}
             />
             <Box sx={{ maxHeight: 340, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 0.25 }}>
               {filteredChains.map(chain => (
                 <Box
                   key={chain.id}
                   onClick={() => toggleChain(chain.id)}
-                  sx={{
-                    display: 'flex', alignItems: 'center', gap: 1.5, px: 1, py: 0.75,
-                    borderRadius: 2, cursor: 'pointer',
-                    background: selectedChainIds.has(chain.id) ? 'rgba(72,158,255,0.07)' : 'transparent',
-                    '&:hover': { background: selectedChainIds.has(chain.id) ? 'rgba(72,158,255,0.12)' : 'rgba(255,255,255,0.04)' },
-                    transition: 'background 0.15s',
-                  }}
+                  sx={rowSx(selectedChainIds.has(chain.id))}
                 >
                   <Checkbox
                     checked={selectedChainIds.has(chain.id)}
@@ -141,24 +204,49 @@ export default function WidgetPage() {
             </Typography>
           </Paper>
 
-          {/* Token filter */}
-          <Paper sx={{ p: 2.5, background: '#0f0c26', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 3 }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
-              <Typography fontWeight={700}>Token Filter</Typography>
-              <Chip label="optional" size="small" sx={{ fontSize: 10, height: 18 }} />
+          {/* Tokens */}
+          <Paper sx={sectionSx}>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Typography fontWeight={700}>Tokens</Typography>
+                <Chip label="optional" size="small" sx={{ fontSize: 10, height: 18 }} />
+              </Box>
+              <Button size="small" onClick={toggleAllTokens} sx={{ fontSize: 12, py: 0, color: 'primary.main' }}>
+                {selectedSymbols.size === allTokens.length ? 'Deselect all' : 'Select all'}
+              </Button>
             </Box>
             <TextField
-              size="small" fullWidth
-              placeholder="e.g. ETH,USDC,USDT"
-              value={tokenFilter}
-              onChange={e => setTokenFilter(e.target.value)}
-              helperText="Comma-separated symbols. Empty = show all tokens."
-              sx={{ '& .MuiOutlinedInput-root': { background: 'rgba(255,255,255,0.04)', borderRadius: 2 } }}
+              size="small" fullWidth placeholder="Search tokens…"
+              value={searchToken} onChange={e => setSearchToken(e.target.value)}
+              sx={searchSx}
             />
+            <Box sx={{ maxHeight: 220, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+              {filteredTokens.map(token => (
+                <Box
+                  key={token.symbol}
+                  onClick={() => toggleSymbol(token.symbol)}
+                  sx={rowSx(selectedSymbols.has(token.symbol))}
+                >
+                  <Checkbox
+                    checked={selectedSymbols.has(token.symbol)}
+                    size="small" sx={{ p: 0 }}
+                    onClick={e => e.stopPropagation()}
+                    onChange={() => toggleSymbol(token.symbol)}
+                  />
+                  <Avatar src={token.logoURI} sx={{ width: 24, height: 24, fontSize: 10 }}>{token.symbol[0]}</Avatar>
+                  <Typography variant="body2">{token.symbol}</Typography>
+                </Box>
+              ))}
+            </Box>
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 1.5, display: 'block' }}>
+              {selectedSymbols.size === allTokens.length
+                ? 'All tokens shown'
+                : `${selectedSymbols.size} of ${allTokens.length} tokens selected`}
+            </Typography>
           </Paper>
 
           {/* Dimensions */}
-          <Paper sx={{ p: 2.5, background: '#0f0c26', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 3 }}>
+          <Paper sx={sectionSx}>
             <Typography fontWeight={700} mb={1.5}>Dimensions</Typography>
             <Box sx={{ display: 'flex', gap: 2 }}>
               <TextField
