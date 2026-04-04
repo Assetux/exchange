@@ -167,10 +167,15 @@ export function SwapWidget({ allowedChainIds, allowedSymbols }: { allowedChainId
     getChains().then(c => {
       const filtered = allowedChainIds?.length ? c.filter(x => allowedChainIds.includes(x.id)) : c;
       setChains(filtered);
-      const eth = filtered.find(x => x.id === 1) || filtered.find(x => x.chainType === 'EVM') || null;
-      const base = filtered.find(x => x.id === 8453) || null;
-      setFromChain(eth);
-      setToChain(base || eth);
+      if (filtered.length === 1) {
+        setFromChain(filtered[0]);
+        setToChain(filtered[0]);
+      } else {
+        const eth = filtered.find(x => x.id === 1) || filtered.find(x => x.chainType === 'EVM') || null;
+        const base = filtered.find(x => x.id === 8453) || null;
+        setFromChain(eth);
+        setToChain(base || eth);
+      }
     }).catch(console.error);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
