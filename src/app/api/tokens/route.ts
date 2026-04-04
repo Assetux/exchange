@@ -121,8 +121,14 @@ const AABTC_ADDRESSES = new Set([
   '0x6f7a6a45b7bb844b6f037681a8d7aae3ca42ce57', // BSC
 ]);
 
+// wSOL is LiFi's name for native SOL — normalize to SOL for consistent filtering
+const WSOL_ADDRESS = 'So11111111111111111111111111111111111111112';
+
 function applyLogoOverrides(tokens: any[]): any[] {
   return tokens.map(t => {
+    if (t.address === WSOL_ADDRESS) {
+      return { ...t, symbol: 'SOL', name: 'SOL' };
+    }
     if (AABTC_ADDRESSES.has(t.address?.toLowerCase()) || AABTC_ADDRESSES.has(t.address) || t.symbol === 'aaaBTC') {
       return { ...t, logoURI: AABTC_LOGO };
     }
