@@ -463,6 +463,36 @@ export function SwapWidget({
       const lifiOut = lifiQ ? BigInt(lifiQ.estimate.toAmount) : 0n;
       const zxOut   = zxQ   ? BigInt(zxQ.buyAmount)           : 0n;
 
+      // ── Rate comparison log ───────────────────────────────────────────────
+      console.group(`[Assetux] Quote — ${fromToken?.symbol} → ${toToken?.symbol} (${fromChain?.name})`);
+      console.log('Input:   ', amount, fromToken?.symbol, `(${resolvedFromAmount} raw)`);
+      if (lifiQ) {
+        const lifiFormatted = formatAmount(lifiQ.estimate.toAmount, toToken!.decimals);
+        console.log('LI.FI:   ', lifiFormatted, toToken?.symbol,
+          `| tool: ${lifiQ.toolDetails?.name || lifiQ.tool}`,
+          `| gas: $${lifiQ.estimate.gasCosts?.[0]?.amountUSD ?? '?'}`,
+          `| ~${Math.round((lifiQ.estimate.executionDuration || 30) / 60)}m`);
+      } else {
+        console.log('LI.FI:    no quote');
+      }
+      if (zxQ) {
+        const zxFormatted = formatAmount(zxQ.buyAmount, toToken!.decimals);
+        const fills = zxQ.route?.fills?.map(f => f.source).join(', ') || '?';
+        console.log('0x:      ', zxFormatted, toToken?.symbol,
+          `| via: ${fills}`,
+          `| min: ${formatAmount(zxQ.minBuyAmount, toToken!.decimals)}`);
+      } else {
+        console.log('0x:       no quote (cross-chain / Solana / unsupported chain)');
+      }
+      if (lifiQ && zxQ) {
+        const diff = Number(zxOut - lifiOut);
+        const pct  = lifiOut > 0n ? ((Number(zxOut) / Number(lifiOut) - 1) * 100).toFixed(3) : 'N/A';
+        const winner = zxOut > lifiOut ? '0x' : 'LI.FI';
+        console.log(`Winner:   ${winner} (+${pct}% / ${formatAmount(String(diff < 0 ? -diff : diff), toToken!.decimals)} ${toToken?.symbol})`);
+      }
+      console.groupEnd();
+      // ─────────────────────────────────────────────────────────────────────
+
       if (zxQ && zxOut > lifiOut) {
         // 0x wins
         setZeroxQuote(zxQ);
