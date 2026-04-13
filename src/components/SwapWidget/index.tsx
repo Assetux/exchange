@@ -30,6 +30,7 @@ import { PublicKey, LAMPORTS_PER_SOL, VersionedTransaction, Transaction, SystemP
 import { getAssociatedTokenAddressSync, createAssociatedTokenAccountInstruction, createSyncNativeInstruction } from '@solana/spl-token';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { getChains, getTokens, getQuote, formatAmount, isSolana, type Chain, type Token, type Quote } from '@/lib/lifi';
+import { getZeroxQuote, toZeroxTokenAddress, zeroxSupportsChain, type ZeroxQuote } from '@/lib/zerox';
 import { resolveWeb3Name, getWeb3Name, isWeb3Domain, isValidAddress } from '@/lib/spaceid';
 import { ChainSelectModal } from './ChainSelectModal';
 import { TokenSelectModal } from './TokenSelectModal';
@@ -209,6 +210,8 @@ export function SwapWidget({
   const resolveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [quote, setQuote] = useState<Quote | null>(null);
+  const [quoteSource, setQuoteSource] = useState<'lifi' | '0x'>('lifi');
+  const [zeroxQuote, setZeroxQuote] = useState<ZeroxQuote | null>(null);
   const [loadingTokens, setLoadingTokens] = useState(false);
   const [loadingQuote, setLoadingQuote] = useState(false);
   const [swapping, setSwapping] = useState(false);
@@ -397,7 +400,7 @@ export function SwapWidget({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [usdMode, fromAmount, toToken, toChain, effectiveToAddress]);
 
-  // ── fetchQuote ────────────────────────────────────────────────────────────
+  // ── fetchQuote — compares LiFi vs 0x (same-chain EVM), uses best rate ────
   const fetchQuote = useCallback(async (side: 'from' | 'to', amount: string) => {
     if (!fromChain || !toChain || !fromToken || !toToken || !amount) return;
     const quoteFromAddress = fromAddress || EXCHANGE_WALLET;
@@ -405,6 +408,13 @@ export function SwapWidget({
     setLoadingQuote(true);
     setError('');
     setQuote(null);
+    setZeroxQuote(null);
+
+    // 0x is only viable for same-chain EVM swaps where we have a connected wallet address
+    const canUse0x = !isSolana(fromChain) && !isSolana(toChain)
+      && fromChain.id === toChain.id
+      && zeroxSupportsChain(fromChain.id)
+      && !!fromAddress; // 0x requires a real taker address
 
     try {
       let resolvedFromAmount: string;
@@ -412,6 +422,7 @@ export function SwapWidget({
       if (side === 'from') {
         resolvedFromAmount = parseUnits(amount, fromToken.decimals).toString();
       } else {
+        // Reverse quote: estimate via LiFi ref quote
         const refAmount = parseUnits('1', fromToken.decimals).toString();
         const refQuote = await getQuote({
           fromChain: fromChain.id, toChain: toChain.id,
@@ -424,17 +435,49 @@ export function SwapWidget({
         resolvedFromAmount = ((Number(desiredToRaw) / rate) * 1.03).toFixed(0);
       }
 
-      const q = await getQuote({
-        fromChain: fromChain.id, toChain: toChain.id,
-        fromToken: fromToken.address, toToken: toToken.address,
-        fromAmount: resolvedFromAmount, fromAddress: quoteFromAddress, toAddress: quoteToAddress,
-      });
-      setQuote(q);
+      // Fire LiFi and (optionally) 0x in parallel
+      const [lifiResult, zeroxResult] = await Promise.allSettled([
+        getQuote({
+          fromChain: fromChain.id, toChain: toChain.id,
+          fromToken: fromToken.address, toToken: toToken.address,
+          fromAmount: resolvedFromAmount, fromAddress: quoteFromAddress, toAddress: quoteToAddress,
+        }),
+        canUse0x
+          ? getZeroxQuote({
+              chainId: fromChain.id,
+              sellToken: toZeroxTokenAddress(fromToken.address),
+              buyToken: toZeroxTokenAddress(toToken.address),
+              sellAmount: resolvedFromAmount,
+              taker: fromAddress!,
+              ...(quoteToAddress !== fromAddress ? { recipient: quoteToAddress } : {}),
+            })
+          : Promise.resolve(null),
+      ]);
 
-      if (side === 'from') {
-        setToAmount(formatAmount(q.estimate.toAmount, toToken.decimals));
-      } else {
-        setFromAmount(formatUnits(BigInt(q.action.fromAmount), fromToken.decimals));
+      const lifiQ = lifiResult.status === 'fulfilled' ? lifiResult.value : null;
+      const zxQ   = zeroxResult.status === 'fulfilled' ? zeroxResult.value : null;
+
+      if (!lifiQ && !zxQ) throw new Error('No route found');
+
+      // Pick the source that gives more output tokens
+      const lifiOut = lifiQ ? BigInt(lifiQ.estimate.toAmount) : 0n;
+      const zxOut   = zxQ   ? BigInt(zxQ.buyAmount)           : 0n;
+
+      if (zxQ && zxOut > lifiOut) {
+        // 0x wins
+        setZeroxQuote(zxQ);
+        setQuote(lifiQ); // keep LiFi for display fallback if needed
+        setQuoteSource('0x');
+        const outAmount = formatAmount(zxQ.buyAmount, toToken.decimals);
+        if (side === 'from') setToAmount(outAmount);
+        else setFromAmount(formatUnits(BigInt(resolvedFromAmount), fromToken.decimals));
+      } else if (lifiQ) {
+        // LiFi wins (or 0x unavailable)
+        setQuote(lifiQ);
+        setZeroxQuote(zxQ);
+        setQuoteSource('lifi');
+        if (side === 'from') setToAmount(formatAmount(lifiQ.estimate.toAmount, toToken.decimals));
+        else setFromAmount(formatUnits(BigInt(lifiQ.action.fromAmount), fromToken.decimals));
       }
     } catch (e: any) {
       setError(e.message);
@@ -443,8 +486,68 @@ export function SwapWidget({
     }
   }, [fromChain, toChain, fromToken, toToken, fromAddress, effectiveToAddress]);
 
+  // ── handleSwap0x — execute via 0x allowance-holder router ───────────────
+  const handleSwap0x = async () => {
+    if (!zeroxQuote || !fromToken || !evmAddress || !fromChain) return;
+    setSwapping(true);
+    setError('');
+    try {
+      const chainId = fromChain.id;
+
+      if (chainId !== publicClient?.chain.id) {
+        try { await switchChainAsync({ chainId }); } catch {
+          throw new Error(`Please switch to ${fromChain.name} in your wallet`);
+        }
+      }
+
+      const freshWallet = await getWalletClient(wagmiConfig, { chainId });
+      const freshPublic = getPublicClient(wagmiConfig, { chainId });
+      if (!freshWallet || !freshPublic) throw new Error('Could not get wallet client');
+
+      // ERC-20 approval if needed
+      const isNative = fromToken.address === NATIVE;
+      if (!isNative && zeroxQuote.allowanceTarget) {
+        const allowance = await freshPublic.readContract({
+          address: fromToken.address as `0x${string}`,
+          abi: erc20Abi,
+          functionName: 'allowance',
+          args: [evmAddress, zeroxQuote.allowanceTarget as `0x${string}`],
+        });
+        const needed = BigInt(zeroxQuote.sellAmount);
+        if ((allowance as bigint) < needed) {
+          const ah = await freshWallet.writeContract({
+            address: fromToken.address as `0x${string}`,
+            abi: erc20Abi,
+            functionName: 'approve',
+            args: [zeroxQuote.allowanceTarget as `0x${string}`, needed],
+          });
+          await freshPublic.waitForTransactionReceipt({ hash: ah });
+        }
+      }
+
+      const tx = zeroxQuote.transaction;
+      const hash = await freshWallet.sendTransaction({
+        to: tx.to as `0x${string}`,
+        data: tx.data as `0x${string}`,
+        value: tx.value ? BigInt(tx.value) : 0n,
+        ...(tx.gas ? { gas: BigInt(tx.gas) } : {}),
+      });
+      await freshPublic.waitForTransactionReceipt({ hash });
+      setSuccess(`Swap complete via 0x! Tx: ${hash}`);
+      setQuote(null); setZeroxQuote(null); setFromAmount(''); setToAmount('');
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSwapping(false);
+    }
+  };
+
   // ── handleSwap ────────────────────────────────────────────────────────────
   const handleSwap = async () => {
+    if (quoteSource === '0x' && zeroxQuote) {
+      await handleSwap0x();
+      return;
+    }
     if (!quote?.transactionRequest || !fromToken) return;
     setSwapping(true);
     setError('');
@@ -581,7 +684,7 @@ export function SwapWidget({
     setFromToken(toToken); setToToken(fromToken);
     setFromTokens(toTokens); setToTokens(fromTokens);
     setFromAmount(toAmount); setToAmount(fromAmount);
-    setQuote(null);
+    setQuote(null); setZeroxQuote(null);
     // Clear custom toAddress if set — sides are flipped
     setToAddressInput('');
     setToAddressResolved(null);
@@ -882,26 +985,76 @@ export function SwapWidget({
         </Collapse>
 
         {/* Quote details */}
-        {!usdMode && quote && (
+        {!usdMode && (quote || zeroxQuote) && (
           <Box sx={{ p: 1.5, borderRadius: 2, background: 'rgba(72,158,255,0.05)', border: '1px solid rgba(72,158,255,0.12)', mb: 2 }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Typography variant="caption" color="text.secondary">Route</Typography>
-              <Chip label={quote.toolDetails?.name || quote.tool} size="small" sx={{ height: 20, fontSize: 11 }} />
+            {/* Source badge */}
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
+              <Typography variant="caption" color="text.secondary">Best route</Typography>
+              <Box sx={{ display: 'flex', gap: 0.5 }}>
+                <Chip
+                  label={quoteSource === '0x' ? '0x Protocol ✓' : (quote?.toolDetails?.name || quote?.tool || 'LI.FI ✓')}
+                  size="small"
+                  sx={{ height: 20, fontSize: 11,
+                    background: quoteSource === '0x' ? 'rgba(0,175,255,0.15)' : 'rgba(72,158,255,0.15)',
+                    color: quoteSource === '0x' ? '#00AFFF' : 'primary.main' }}
+                />
+              </Box>
             </Box>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
-              <Typography variant="caption" color="text.secondary">Est. time</Typography>
-              <Typography variant="caption">{Math.round((quote.estimate.executionDuration || 30) / 60)}m</Typography>
-            </Box>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
-              <Typography variant="caption" color="text.secondary">Gas</Typography>
-              <Typography variant="caption">${quote.estimate.gasCosts?.[0]?.amountUSD || '—'}</Typography>
-            </Box>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
-              <Typography variant="caption" color="text.secondary">Min received</Typography>
-              <Typography variant="caption">
-                {toToken ? `${formatAmount(quote.estimate.toAmountMin, toToken.decimals)} ${toToken.symbol}` : '—'}
-              </Typography>
-            </Box>
+
+            {/* Both quotes side-by-side when available */}
+            {quote && zeroxQuote && (
+              <Box sx={{ display: 'flex', gap: 1, mb: 1, p: 1, borderRadius: 1.5, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                <Box sx={{ flex: 1, textAlign: 'center' }}>
+                  <Typography variant="caption" color="text.secondary" display="block">LI.FI</Typography>
+                  <Typography variant="caption" sx={{ fontWeight: 700, color: quoteSource === 'lifi' ? 'primary.main' : 'text.secondary' }}>
+                    {formatAmount(quote.estimate.toAmount, toToken?.decimals ?? 6)} {toToken?.symbol}
+                    {quoteSource === 'lifi' && <span style={{ marginLeft: 4 }}>★</span>}
+                  </Typography>
+                </Box>
+                <Box sx={{ flex: 1, textAlign: 'center' }}>
+                  <Typography variant="caption" color="text.secondary" display="block">0x</Typography>
+                  <Typography variant="caption" sx={{ fontWeight: 700, color: quoteSource === '0x' ? '#00AFFF' : 'text.secondary' }}>
+                    {formatAmount(zeroxQuote.buyAmount, toToken?.decimals ?? 6)} {toToken?.symbol}
+                    {quoteSource === '0x' && <span style={{ marginLeft: 4 }}>★</span>}
+                  </Typography>
+                </Box>
+              </Box>
+            )}
+
+            {quoteSource === '0x' && zeroxQuote ? (
+              <>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary">Min received</Typography>
+                  <Typography variant="caption">
+                    {toToken ? `${formatAmount(zeroxQuote.minBuyAmount, toToken.decimals)} ${toToken.symbol}` : '—'}
+                  </Typography>
+                </Box>
+                {zeroxQuote.route?.fills?.[0] && (
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                    <Typography variant="caption" color="text.secondary">Via</Typography>
+                    <Typography variant="caption">{zeroxQuote.route.fills[0].source}</Typography>
+                  </Box>
+                )}
+              </>
+            ) : quote ? (
+              <>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary">Est. time</Typography>
+                  <Typography variant="caption">{Math.round((quote.estimate.executionDuration || 30) / 60)}m</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary">Gas</Typography>
+                  <Typography variant="caption">${quote.estimate.gasCosts?.[0]?.amountUSD || '—'}</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary">Min received</Typography>
+                  <Typography variant="caption">
+                    {toToken ? `${formatAmount(quote.estimate.toAmountMin, toToken.decimals)} ${toToken.symbol}` : '—'}
+                  </Typography>
+                </Box>
+              </>
+            ) : null}
+
             {effectiveToAddress && effectiveToAddress !== walletToAddress && (
               <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
                 <Typography variant="caption" color="text.secondary">Sending to</Typography>
@@ -987,7 +1140,7 @@ export function SwapWidget({
           </>
         ) : !isFromConnected ? (
           <WalletConnectSection />
-        ) : !quote ? (
+        ) : !(quote || zeroxQuote) ? (
           <Button variant="contained" fullWidth size="large"
             onClick={() => fetchQuote(activeInput.current, activeInput.current === 'from' ? fromAmount : toAmount)}
             disabled={!fromAmount && !toAmount || !fromToken || !toToken || loadingQuote || !toAddressOk || toAddressResolving}
@@ -997,8 +1150,13 @@ export function SwapWidget({
         ) : (
           <Button variant="contained" fullWidth size="large" onClick={handleSwap}
             disabled={swapping || !toAddressOk || toAddressResolving}
-            sx={{ borderRadius: 2, py: 1.5, fontWeight: 700 }}>
-            {swapping ? <CircularProgress size={22} color="inherit" /> : `Swap ${fromToken?.symbol} → ${toToken?.symbol}`}
+            sx={{ borderRadius: 2, py: 1.5, fontWeight: 700,
+              background: quoteSource === '0x'
+                ? 'linear-gradient(135deg,#00AFFF,#0070CC)'
+                : undefined }}>
+            {swapping
+              ? <CircularProgress size={22} color="inherit" />
+              : `Swap ${fromToken?.symbol} → ${toToken?.symbol} via ${quoteSource === '0x' ? '0x' : 'LI.FI'}`}
           </Button>
         )}
       </Paper>
