@@ -11,10 +11,16 @@ import Avatar from '@mui/material/Avatar';
 import ButtonBase from '@mui/material/ButtonBase';
 import Chip from '@mui/material/Chip';
 import Tooltip from '@mui/material/Tooltip';
+import Collapse from '@mui/material/Collapse';
+import InputAdornment from '@mui/material/InputAdornment';
+import IconButton from '@mui/material/IconButton';
 import SwapVertIcon from '@mui/icons-material/SwapVert';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import CreditCardIcon from '@mui/icons-material/CreditCard';
 import AccountBalanceWalletIcon from '@mui/icons-material/AccountBalanceWallet';
+import EditIcon from '@mui/icons-material/Edit';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import ErrorIcon from '@mui/icons-material/Error';
 import { useConnection, usePublicClient, useWalletClient, useSwitchChain, useBalance, useReadContract, useConfig } from 'wagmi';
 import { getWalletClient, getPublicClient } from '@wagmi/core';
 import { parseUnits, formatUnits, erc20Abi } from 'viem';
@@ -24,6 +30,7 @@ import { PublicKey, LAMPORTS_PER_SOL, VersionedTransaction, Transaction, SystemP
 import { getAssociatedTokenAddressSync, createAssociatedTokenAccountInstruction, createSyncNativeInstruction } from '@solana/spl-token';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { getChains, getTokens, getQuote, formatAmount, isSolana, type Chain, type Token, type Quote } from '@/lib/lifi';
+import { resolveWeb3Name, getWeb3Name, isWeb3Domain, isValidAddress } from '@/lib/spaceid';
 import { ChainSelectModal } from './ChainSelectModal';
 import { TokenSelectModal } from './TokenSelectModal';
 import { createWertSession } from '@/lib/wert';
@@ -59,6 +66,7 @@ const EXCHANGE_WALLET = '0xE6d194fbeF9215976a80D4479A3caFf0caf14BD1';
 // Solana system program — valid placeholder address for unauthenticated quote requests
 const SOLANA_PLACEHOLDER = '11111111111111111111111111111111';
 
+// ── useTokenBalance (EVM) ────────────────────────────────────────────────────
 function useTokenBalance(
   evmAddress: `0x${string}` | undefined,
   token: Token | null,
@@ -68,14 +76,12 @@ function useTokenBalance(
   const isEvm = !!chain && !isSolana(chain);
   const enabled = isEvm && !!evmAddress && !!token;
 
-  // Native balance (ETH, BNB, etc.)
   const { data: nativeData } = useBalance({
     address: evmAddress,
     chainId: chain?.id,
     query: { enabled: enabled && isNative, refetchInterval: 60_000 },
   });
 
-  // ERC-20 balance
   const { data: erc20Raw } = useReadContract({
     address: token?.address as `0x${string}`,
     abi: erc20Abi,
@@ -98,6 +104,7 @@ function useTokenBalance(
   return null;
 }
 
+// ── useSolanaTokenBalance ────────────────────────────────────────────────────
 function useSolanaTokenBalance(token: Token | null, chain: Chain | null) {
   const { publicKey } = useSolanaWallet();
   const { connection } = useSolanaConnection();
@@ -131,7 +138,46 @@ function useSolanaTokenBalance(token: Token | null, chain: Chain | null) {
   return balance;
 }
 
-export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }: { allowedChainIds?: number[]; allowedSymbols?: string[]; theme?: Partial<WidgetTheme> } = {}) {
+// ── useWalletSpaceId — show Space ID domain for the connected wallet ──────────
+function useWalletSpaceId(address: string | undefined, chainId?: number): string | null {
+  const [name, setName] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!address) { setName(null); return; }
+    let cancelled = false;
+    getWeb3Name(address, chainId).then(n => { if (!cancelled) setName(n); });
+    return () => { cancelled = true; };
+  }, [address, chainId]);
+
+  return name;
+}
+
+// ── Props ────────────────────────────────────────────────────────────────────
+export interface SwapWidgetProps {
+  allowedChainIds?: number[];
+  allowedSymbols?: string[];
+  theme?: Partial<WidgetTheme>;
+  // URL-param pre-fills
+  initFromChainKey?: string; // e.g. 'ETH', 'SOL', chain id as string
+  initToChainKey?: string;
+  initFromToken?: string;    // symbol or address
+  initToToken?: string;
+  initAmount?: string;
+  initToAddress?: string;
+}
+
+// ── SwapWidget ───────────────────────────────────────────────────────────────
+export function SwapWidget({
+  allowedChainIds,
+  allowedSymbols,
+  theme: themeProp,
+  initFromChainKey,
+  initToChainKey,
+  initFromToken,
+  initToToken,
+  initAmount,
+  initToAddress,
+}: SwapWidgetProps = {}) {
   const T = { ...DEFAULT_WIDGET_THEME, ...themeProp };
   const { address: evmAddress, isConnected: evmConnected } = useConnection();
   const { data: walletClient } = useWalletClient();
@@ -150,10 +196,17 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
   const [fromToken, setFromToken] = useState<Token | null>(null);
   const [toToken, setToToken] = useState<Token | null>(null);
 
-  // Both fields are editable; track which one the user last typed in
   const [fromAmount, setFromAmount] = useState('');
   const [toAmount, setToAmount] = useState('');
   const activeInput = useRef<'from' | 'to'>('from');
+
+  // ── toAddress feature ──────────────────────────────────────────────────────
+  const [toAddressOpen, setToAddressOpen] = useState(false);
+  const [toAddressInput, setToAddressInput] = useState('');
+  const [toAddressResolved, setToAddressResolved] = useState<string | null>(null); // resolved hex/base58 from domain
+  const [toAddressResolving, setToAddressResolving] = useState(false);
+  const [toAddressError, setToAddressError] = useState('');
+  const resolveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [quote, setQuote] = useState<Quote | null>(null);
   const [loadingTokens, setLoadingTokens] = useState(false);
@@ -163,7 +216,6 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
-  // USD/Wert mode: pre-verify Base USDC → toToken route
   const [wertQuote, setWertQuote] = useState<Quote | null>(null);
   const [wertQuoteLoading, setWertQuoteLoading] = useState(false);
   const [wertQuoteError, setWertQuoteError] = useState('');
@@ -174,8 +226,19 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
   const [fromTokenOpen, setFromTokenOpen] = useState(false);
   const [toTokenOpen, setToTokenOpen] = useState(false);
 
+  // Space ID: show domain name for connected wallets
+  const evmChainId = fromChain && !isSolana(fromChain) ? fromChain.id : toChain && !isSolana(toChain) ? toChain.id : undefined;
+  const evmSpaceName = useWalletSpaceId(evmAddress, evmChainId);
+  const solSpaceName = useWalletSpaceId(solPublicKey?.toBase58(), undefined);
+
   const fromAddress = isSolana(fromChain) ? solPublicKey?.toBase58() : evmAddress;
-  const toAddress = isSolana(toChain) ? solPublicKey?.toBase58() : evmAddress;
+  const walletToAddress = isSolana(toChain) ? solPublicKey?.toBase58() : evmAddress;
+
+  // The effective toAddress: manual override takes priority
+  const effectiveToAddress = toAddressInput.trim()
+    ? (toAddressResolved || (toAddressError ? undefined : undefined))
+    : walletToAddress;
+
   const isFromConnected = isSolana(fromChain) ? solConnected : evmConnected;
   const isToConnected = isSolana(toChain) ? solConnected : true;
 
@@ -188,23 +251,38 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
   const fromBalance = isSolana(fromChain) ? (solFromBalance !== null ? `${solFromBalance} ${fromToken?.symbol || ''}` : null) : evmFromBalance;
   const toBalance = isSolana(toChain) ? (solToBalance !== null ? `${solToBalance} ${toToken?.symbol || ''}` : null) : evmToBalance;
 
+  // ── Init chains ──────────────────────────────────────────────────────────
+  const didInit = useRef(false);
   useEffect(() => {
     getChains().then(c => {
       const filtered = allowedChainIds?.length ? c.filter(x => allowedChainIds.includes(x.id)) : c;
       setChains(filtered);
-      if (filtered.length === 1) {
-        setFromChain(filtered[0]);
-        setToChain(filtered[0]);
-      } else {
-        const eth = filtered.find(x => x.id === 1) || filtered.find(x => x.chainType === 'EVM') || null;
-        const base = filtered.find(x => x.id === 8453) || null;
-        setFromChain(eth);
-        setToChain(base || eth);
+
+      let from: Chain | null = null;
+      let to: Chain | null = null;
+
+      if (initFromChainKey) {
+        from = filtered.find(x => x.name.toUpperCase().includes(initFromChainKey.toUpperCase()) || String(x.id) === initFromChainKey) || null;
       }
+      if (initToChainKey) {
+        to = filtered.find(x => x.name.toUpperCase().includes(initToChainKey.toUpperCase()) || String(x.id) === initToChainKey) || null;
+      }
+
+      if (!from) {
+        if (filtered.length === 1) from = filtered[0];
+        else from = filtered.find(x => x.id === 1) || filtered.find(x => x.chainType === 'EVM') || null;
+      }
+      if (!to) {
+        if (filtered.length === 1) to = filtered[0];
+        else to = filtered.find(x => x.id === 8453) || from;
+      }
+      setFromChain(from);
+      setToChain(to);
     }).catch(console.error);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── Load from-tokens ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!fromChain || usdMode) return;
     setLoadingTokens(true);
@@ -212,23 +290,86 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
     getTokens(fromChain.id).then(t => {
       const filtered = allowedSymbols?.length ? t.filter(x => allowedSymbols.includes(x.symbol.toUpperCase())) : t;
       setFromTokens(filtered);
-      setFromToken(filtered[0] || null);
+      if (initFromToken && !didInit.current) {
+        const match = filtered.find(x => x.symbol.toUpperCase() === initFromToken.toUpperCase() || x.address.toLowerCase() === initFromToken.toLowerCase());
+        setFromToken(match || filtered[0] || null);
+      } else {
+        setFromToken(filtered[0] || null);
+      }
     }).catch(console.error).finally(() => setLoadingTokens(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromChain, usdMode]);
 
+  // ── Load to-tokens ────────────────────────────────────────────────────────
   useEffect(() => {
     if (!toChain) return;
     setToToken(null);
     getTokens(toChain.id).then(t => {
       const filtered = allowedSymbols?.length ? t.filter(x => allowedSymbols.includes(x.symbol.toUpperCase())) : t;
       setToTokens(filtered);
-      setToToken(filtered[0] || null);
+      if (initToToken && !didInit.current) {
+        const match = filtered.find(x => x.symbol.toUpperCase() === initToToken.toUpperCase() || x.address.toLowerCase() === initToToken.toLowerCase());
+        setToToken(match || filtered[0] || null);
+      } else {
+        setToToken(filtered[0] || null);
+      }
     }).catch(console.error);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toChain]);
 
-  // Verify Base USDC → toToken route whenever USD mode params change
+  // ── Apply init amount & toAddress once both tokens are loaded ────────────
+  useEffect(() => {
+    if (didInit.current) return;
+    if (!fromToken || !toToken) return;
+    if (initAmount) { setFromAmount(initAmount); activeInput.current = 'from'; }
+    if (initToAddress) {
+      setToAddressOpen(true);
+      setToAddressInput(initToAddress);
+    }
+    didInit.current = true;
+  }, [fromToken, toToken, initAmount, initToAddress]);
+
+  // ── toAddress input → validate / resolve Space ID domain ─────────────────
+  useEffect(() => {
+    const raw = toAddressInput.trim();
+    setToAddressError('');
+    setToAddressResolved(null);
+
+    if (!raw) return;
+
+    if (resolveTimer.current) clearTimeout(resolveTimer.current);
+
+    if (isWeb3Domain(raw)) {
+      // Resolve Space ID domain
+      setToAddressResolving(true);
+      resolveTimer.current = setTimeout(async () => {
+        const addr = await resolveWeb3Name(raw);
+        setToAddressResolving(false);
+        if (addr) {
+          // Validate resolved address against destination chain type
+          const solDest = isSolana(toChain);
+          if (!isValidAddress(addr, solDest)) {
+            setToAddressError(`Resolved address (${addr.slice(0, 8)}…) is not compatible with ${toChain?.name || 'destination chain'}`);
+          } else {
+            setToAddressResolved(addr);
+          }
+        } else {
+          setToAddressError(`Could not resolve "${raw}" — domain not found or no address set`);
+        }
+      }, 600);
+    } else {
+      // Plain address — validate immediately
+      const solDest = isSolana(toChain);
+      if (!isValidAddress(raw, solDest)) {
+        setToAddressError(`Address format is not compatible with ${toChain?.name || 'destination chain'}`);
+      }
+    }
+
+    return () => { if (resolveTimer.current) clearTimeout(resolveTimer.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toAddressInput, toChain]);
+
+  // ── USD/Wert wertQuote ────────────────────────────────────────────────────
   useEffect(() => {
     if (!usdMode || !toToken || !toChain) {
       setWertQuote(null); setWertQuoteError(''); return;
@@ -241,9 +382,8 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
     setWertQuoteLoading(true);
     setWertQuote(null);
     setWertQuoteError('');
-    // 95% of USD amount in USDC (6 decimals on Base)
     const usdcAmount = Math.floor(usd * 0.95 * 1e6).toString();
-    const dest = toAddress || (isSolana(toChain) ? SOLANA_PLACEHOLDER : EXCHANGE_WALLET);
+    const dest = effectiveToAddress || (isSolana(toChain) ? SOLANA_PLACEHOLDER : EXCHANGE_WALLET);
     getQuote({
       fromChain: 8453, toChain: toChain.id,
       fromToken: USDC_BASE, toToken: toToken.address,
@@ -254,14 +394,14 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
       .catch(e => { if (!cancelled) setWertQuoteError(e.message || 'No route found'); })
       .finally(() => { if (!cancelled) setWertQuoteLoading(false); });
     return () => { cancelled = true; };
-  }, [usdMode, fromAmount, toToken, toChain, toAddress]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usdMode, fromAmount, toToken, toChain, effectiveToAddress]);
 
+  // ── fetchQuote ────────────────────────────────────────────────────────────
   const fetchQuote = useCallback(async (side: 'from' | 'to', amount: string) => {
     if (!fromChain || !toChain || !fromToken || !toToken || !amount) return;
-    // Use placeholder addresses so quotes load even without a connected wallet.
-    // Wallet is validated at swap execution time in handleSwap.
     const quoteFromAddress = fromAddress || EXCHANGE_WALLET;
-    const quoteToAddress = toAddress || (isSolana(toChain) ? SOLANA_PLACEHOLDER : EXCHANGE_WALLET);
+    const quoteToAddress = effectiveToAddress || (isSolana(toChain) ? SOLANA_PLACEHOLDER : EXCHANGE_WALLET);
     setLoadingQuote(true);
     setError('');
     setQuote(null);
@@ -272,19 +412,15 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
       if (side === 'from') {
         resolvedFromAmount = parseUnits(amount, fromToken.decimals).toString();
       } else {
-        // Reverse: user wants `amount` of toToken → estimate how much fromToken needed
-        // Step 1: get a reference quote for 1 unit of fromToken
         const refAmount = parseUnits('1', fromToken.decimals).toString();
         const refQuote = await getQuote({
           fromChain: fromChain.id, toChain: toChain.id,
           fromToken: fromToken.address, toToken: toToken.address,
           fromAmount: refAmount, fromAddress: quoteFromAddress, toAddress: quoteToAddress,
         });
-        // rate = toAmount per 1 fromToken
         const rate = Number(refQuote.estimate.toAmount) / Number(refAmount);
         if (!rate) throw new Error('Could not determine rate');
         const desiredToRaw = parseUnits(amount, toToken.decimals);
-        // add 3% slippage buffer so we don't undershoot
         resolvedFromAmount = ((Number(desiredToRaw) / rate) * 1.03).toFixed(0);
       }
 
@@ -295,7 +431,6 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
       });
       setQuote(q);
 
-      // Sync the other field from the quote result
       if (side === 'from') {
         setToAmount(formatAmount(q.estimate.toAmount, toToken.decimals));
       } else {
@@ -306,8 +441,9 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
     } finally {
       setLoadingQuote(false);
     }
-  }, [fromChain, toChain, fromToken, toToken, fromAddress, toAddress]);
+  }, [fromChain, toChain, fromToken, toToken, fromAddress, effectiveToAddress]);
 
+  // ── handleSwap ────────────────────────────────────────────────────────────
   const handleSwap = async () => {
     if (!quote?.transactionRequest || !fromToken) return;
     setSwapping(true);
@@ -317,9 +453,6 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
       if (isSolana(fromChain)) {
         if (!solPublicKey) throw new Error('Connect Solana wallet');
 
-        // If fromToken is wSOL, ensure the ATA exists and has enough balance.
-        // LiFi's transaction assumes the wSOL ATA is already initialized — the SDK
-        // handles this automatically; we must do it manually with the raw API.
         const WSOL = 'So11111111111111111111111111111111111111112';
         if (fromToken?.address === WSOL) {
           const wsolMint = new PublicKey(WSOL);
@@ -371,14 +504,12 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
 
       const targetChainId = tx.chainId as number;
 
-      // Switch chain if needed, then get fresh clients bound to the correct chain
       if (targetChainId && targetChainId !== publicClient?.chain.id) {
         try { await switchChainAsync({ chainId: targetChainId }); } catch {
           throw new Error(`Please switch your wallet to the required network (chain ${targetChainId})`);
         }
       }
 
-      // Always fetch fresh clients after a potential chain switch — hook values are stale closures
       const freshWallet = await getWalletClient(wagmiConfig, { chainId: targetChainId });
       const freshPublic = getPublicClient(wagmiConfig, { chainId: targetChainId });
       if (!freshWallet || !freshPublic) throw new Error('Could not get wallet client for chain ' + targetChainId);
@@ -418,8 +549,9 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
     }
   };
 
+  // ── handleCardBuy ─────────────────────────────────────────────────────────
   const handleCardBuy = async () => {
-    const destWallet = isSolana(toChain) ? solPublicKey?.toBase58() : evmAddress;
+    const destWallet = effectiveToAddress || (isSolana(toChain) ? solPublicKey?.toBase58() : evmAddress);
     if (!toChain || !toToken || !fromAmount || !destWallet) return;
     setCardLoading(true);
     setError('');
@@ -450,6 +582,10 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
     setFromTokens(toTokens); setToTokens(fromTokens);
     setFromAmount(toAmount); setToAmount(fromAmount);
     setQuote(null);
+    // Clear custom toAddress if set — sides are flipped
+    setToAddressInput('');
+    setToAddressResolved(null);
+    setToAddressError('');
   };
 
   const setMax = () => {
@@ -493,9 +629,14 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
     );
   };
 
+  // Whether the custom toAddress input is valid (or empty = use wallet)
+  const toAddressOk = !toAddressInput.trim() ||
+    (toAddressResolved !== null) ||
+    (!toAddressError && !isWeb3Domain(toAddressInput.trim()) && isValidAddress(toAddressInput.trim(), toIsSolana));
+
   return (
     <>
-      {/* Wert payment overlay — iframe avoids popup blockers and origin issues */}
+      {/* Wert payment overlay */}
       {wertUrl && (
         <Box sx={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.85)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
           <Box sx={{ position: 'relative', width: { xs: '100%', sm: 480 }, height: { xs: '100%', sm: 700 }, maxHeight: '100vh', borderRadius: { xs: 0, sm: 3 }, overflow: 'hidden', background: '#fff' }}>
@@ -508,10 +649,29 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
           </Box>
         </Box>
       )}
-      <Paper elevation={0} sx={{ p: 3, borderRadius: 3, background: T.cardBg, border: `1px solid ${withAlpha(T.borderColor, 0.1)}`, maxWidth: 480, width: '100%' }}>
-        <Typography variant="h6" fontWeight={700} mb={2} sx={{ color: T.fontColor }}>Swap</Typography>
 
-        {/* FROM */}
+      <Paper elevation={0} sx={{ p: 3, borderRadius: 3, background: T.cardBg, border: `1px solid ${withAlpha(T.borderColor, 0.1)}`, maxWidth: 480, width: '100%' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+          <Typography variant="h6" fontWeight={700} sx={{ color: T.fontColor }}>Swap</Typography>
+          {/* Recipient address toggle */}
+          <Tooltip title={toAddressOpen ? 'Use my wallet address' : 'Send to a different address or Web3 Name'}>
+            <Chip
+              icon={<EditIcon sx={{ fontSize: '14px !important' }} />}
+              label={toAddressOpen ? (toAddressInput ? 'Custom recipient' : 'Set recipient') : 'Set recipient'}
+              size="small"
+              onClick={() => { setToAddressOpen(v => !v); if (toAddressOpen) { setToAddressInput(''); setToAddressResolved(null); setToAddressError(''); } }}
+              sx={{
+                height: 26, fontSize: 11, cursor: 'pointer',
+                background: toAddressOpen ? 'rgba(72,158,255,0.15)' : withAlpha(T.fontColor, 0.06),
+                color: toAddressOpen ? 'primary.main' : 'text.secondary',
+                border: toAddressOpen ? '1px solid rgba(72,158,255,0.3)' : `1px solid ${withAlpha(T.borderColor, 0.1)}`,
+                '& .MuiChip-icon': { color: 'inherit' },
+              }}
+            />
+          </Tooltip>
+        </Box>
+
+        {/* ── FROM ── */}
         <Box sx={{ p: 2, borderRadius: 2, background: T.inputBg, border: `1px solid ${withAlpha(T.borderColor, 0.08)}`, mb: 1 }}>
           <Typography variant="caption" mb={1.5} display="block" sx={{ color: withAlpha(T.fontColor, 0.5) }}>From</Typography>
           <Box sx={{ display: 'flex', gap: 1, mb: 1.5 }}>
@@ -568,6 +728,12 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
           {!usdMode && fromAddress && (
             <Typography variant="caption" color="text.secondary" mt={0.5} display="block">
               From: {fromAddress.slice(0, 6)}…{fromAddress.slice(-4)}
+              {evmSpaceName && !fromIsSolana && (
+                <Chip label={evmSpaceName} size="small" sx={{ ml: 1, height: 16, fontSize: 10, background: 'rgba(72,158,255,0.15)', color: 'primary.main' }} />
+              )}
+              {solSpaceName && fromIsSolana && (
+                <Chip label={solSpaceName} size="small" sx={{ ml: 1, height: 16, fontSize: 10, background: 'rgba(153,69,255,0.15)', color: '#9945FF' }} />
+              )}
               {fromIsSolana && <Chip label="Solana" size="small" sx={{ ml: 1, height: 16, fontSize: 10, background: 'rgba(153,69,255,0.2)', color: '#9945FF' }} />}
             </Typography>
           )}
@@ -584,8 +750,8 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
           </Box>
         </Box>
 
-        {/* TO */}
-        <Box sx={{ p: 2, borderRadius: 2, background: T.inputBg, border: `1px solid ${withAlpha(T.borderColor, 0.08)}`, mb: 2 }}>
+        {/* ── TO ── */}
+        <Box sx={{ p: 2, borderRadius: 2, background: T.inputBg, border: `1px solid ${withAlpha(T.borderColor, 0.08)}`, mb: toAddressOpen ? 1 : 2 }}>
           <Typography variant="caption" mb={1.5} display="block" sx={{ color: withAlpha(T.fontColor, 0.5) }}>To</Typography>
           <Box sx={{ display: 'flex', gap: 1, mb: 1.5 }}>
             <ButtonBase onClick={() => setToChainOpen(true)} sx={{
@@ -615,7 +781,7 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
             </ButtonBase>
           </Box>
 
-          {toIsSolana && !solConnected && (
+          {toIsSolana && !solConnected && !toAddressOpen && (
             <Box sx={{ mb: 1 }}>
               <Typography variant="caption" color="warning.main" display="block" mb={0.5}>
                 Connect Solana wallet to receive tokens
@@ -651,18 +817,69 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
             />
           )}
 
-          {!usdMode && (
+          {!usdMode && !toAddressOpen && (
             <>
               <BalanceRow balance={toBalance} />
               {toIsSolana && solConnected && (
                 <Typography variant="caption" color="text.secondary" mt={0.5} display="block">
                   To: {solPublicKey?.toBase58().slice(0, 6)}…{solPublicKey?.toBase58().slice(-4)}
+                  {solSpaceName && (
+                    <Chip label={solSpaceName} size="small" sx={{ ml: 0.5, height: 16, fontSize: 10, background: 'rgba(153,69,255,0.15)', color: '#9945FF' }} />
+                  )}
                   <Chip label="Solana" size="small" sx={{ ml: 0.5, height: 16, fontSize: 10, background: 'rgba(153,69,255,0.2)', color: '#9945FF' }} />
+                </Typography>
+              )}
+              {!toIsSolana && evmAddress && (
+                <Typography variant="caption" color="text.secondary" mt={0.5} display="block">
+                  To: {evmAddress.slice(0, 6)}…{evmAddress.slice(-4)}
+                  {evmSpaceName && (
+                    <Chip label={evmSpaceName} size="small" sx={{ ml: 0.5, height: 16, fontSize: 10, background: 'rgba(72,158,255,0.15)', color: 'primary.main' }} />
+                  )}
                 </Typography>
               )}
             </>
           )}
         </Box>
+
+        {/* ── CUSTOM RECIPIENT ADDRESS ── */}
+        <Collapse in={toAddressOpen}>
+          <Box sx={{ p: 2, borderRadius: 2, background: T.inputBg, border: `1px solid rgba(72,158,255,0.2)`, mb: 2 }}>
+            <Typography variant="caption" mb={1} display="block" sx={{ color: 'rgba(72,158,255,0.8)', fontWeight: 600 }}>
+              Recipient address
+            </Typography>
+            <TextField
+              fullWidth
+              size="small"
+              placeholder={toIsSolana ? 'Solana address or .sol domain' : 'EVM address, .bnb, .eth, .arb domain…'}
+              value={toAddressInput}
+              onChange={e => { setToAddressInput(e.target.value); setQuote(null); }}
+              error={!!toAddressError}
+              helperText={toAddressError || undefined}
+              slotProps={{
+                input: {
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      {toAddressResolving && <CircularProgress size={16} />}
+                      {!toAddressResolving && toAddressResolved && <CheckCircleIcon sx={{ fontSize: 18, color: 'success.main' }} />}
+                      {!toAddressResolving && toAddressError && <ErrorIcon sx={{ fontSize: 18, color: 'error.main' }} />}
+                    </InputAdornment>
+                  ),
+                },
+              }}
+              sx={{ '& .MuiOutlinedInput-root': { background: 'transparent', fontSize: 14 } }}
+            />
+            {toAddressResolved && (
+              <Typography variant="caption" sx={{ color: 'success.main', display: 'block', mt: 0.75 }}>
+                ✓ Resolved: {toAddressResolved.slice(0, 10)}…{toAddressResolved.slice(-6)}
+              </Typography>
+            )}
+            {!toAddressInput && (
+              <Typography variant="caption" color="text.secondary" display="block" mt={0.75}>
+                Supports Web3 Name domains via Space ID (.bnb, .eth, .arb, .sol…)
+              </Typography>
+            )}
+          </Box>
+        </Collapse>
 
         {/* Quote details */}
         {!usdMode && quote && (
@@ -685,6 +902,14 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
                 {toToken ? `${formatAmount(quote.estimate.toAmountMin, toToken.decimals)} ${toToken.symbol}` : '—'}
               </Typography>
             </Box>
+            {effectiveToAddress && effectiveToAddress !== walletToAddress && (
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                <Typography variant="caption" color="text.secondary">Sending to</Typography>
+                <Typography variant="caption" sx={{ color: 'primary.main' }}>
+                  {effectiveToAddress.slice(0, 8)}…{effectiveToAddress.slice(-6)}
+                </Typography>
+              </Box>
+            )}
           </Box>
         )}
 
@@ -739,7 +964,7 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
         {/* CTA */}
         {usdMode ? (
           <>
-            {!( toIsSolana ? solConnected : evmConnected) && (
+            {!( toIsSolana ? solConnected : evmConnected) && !toAddressOpen && (
               <Box sx={{ mb: 2, display: 'flex', justifyContent: 'center' }}>
                 {toIsSolana
                   ? <WalletMultiButton style={{ background: 'linear-gradient(135deg,#489EFF,#9166FF)', borderRadius: 12, height: 44 }} />
@@ -748,7 +973,12 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
             )}
             <Button variant="contained" fullWidth size="large"
               onClick={handleCardBuy}
-              disabled={cardLoading || !fromAmount || parseFloat(fromAmount) < 10 || !toToken || !(toIsSolana ? solConnected : evmConnected) || !wertQuote || wertQuoteLoading}
+              disabled={
+                cardLoading || !fromAmount || parseFloat(fromAmount) < 10 || !toToken ||
+                (!toAddressOpen && !(toIsSolana ? solConnected : evmConnected)) ||
+                (toAddressOpen && (!toAddressInput.trim() || !toAddressOk || toAddressResolving)) ||
+                !wertQuote || wertQuoteLoading
+              }
               sx={{ borderRadius: 2, py: 1.5, fontWeight: 700 }}>
               {cardLoading ? <CircularProgress size={22} color="inherit" />
                 : wertQuoteLoading ? <><CircularProgress size={20} color="inherit" sx={{ mr: 1 }} />Checking route…</>
@@ -760,12 +990,13 @@ export function SwapWidget({ allowedChainIds, allowedSymbols, theme: themeProp }
         ) : !quote ? (
           <Button variant="contained" fullWidth size="large"
             onClick={() => fetchQuote(activeInput.current, activeInput.current === 'from' ? fromAmount : toAmount)}
-            disabled={!fromAmount && !toAmount || !fromToken || !toToken || loadingQuote}
+            disabled={!fromAmount && !toAmount || !fromToken || !toToken || loadingQuote || !toAddressOk || toAddressResolving}
             sx={{ borderRadius: 2, py: 1.5, fontWeight: 700 }}>
             {loadingQuote ? <CircularProgress size={22} color="inherit" /> : 'GET QUOTE'}
           </Button>
         ) : (
-          <Button variant="contained" fullWidth size="large" onClick={handleSwap} disabled={swapping}
+          <Button variant="contained" fullWidth size="large" onClick={handleSwap}
+            disabled={swapping || !toAddressOk || toAddressResolving}
             sx={{ borderRadius: 2, py: 1.5, fontWeight: 700 }}>
             {swapping ? <CircularProgress size={22} color="inherit" /> : `Swap ${fromToken?.symbol} → ${toToken?.symbol}`}
           </Button>

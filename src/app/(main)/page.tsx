@@ -1,6 +1,7 @@
+import { Suspense } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
-import { SwapWidget } from '@/components/SwapWidget';
+import { SwapWidgetWithParams } from '@/components/SwapWidget/SwapWidgetWithParams';
 import { SEOLanding } from '@/components/SEOLanding';
 
 export default function Home() {
@@ -14,7 +15,9 @@ export default function Home() {
         <Typography variant="h6" color="text.secondary" textAlign="center" mb={5}>
           Best rates across Uniswap, Jupiter, Meteora &amp; more. Buy with card in seconds.
         </Typography>
-        <SwapWidget />
+        <Suspense fallback={null}>
+          <SwapWidgetWithParams />
+        </Suspense>
       </Box>
       <SEOLanding />
     </>
