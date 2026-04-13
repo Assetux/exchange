@@ -410,11 +410,13 @@ export function SwapWidget({
     setQuote(null);
     setZeroxQuote(null);
 
-    // 0x is only viable for same-chain EVM swaps where we have a connected wallet address
+    // 0x is viable for same-chain EVM swaps only.
+    // Use real wallet address as taker if connected; fall back to EXCHANGE_WALLET
+    // for quote comparison (same pattern LiFi uses for unauthenticated quotes).
     const canUse0x = !isSolana(fromChain) && !isSolana(toChain)
       && fromChain.id === toChain.id
-      && zeroxSupportsChain(fromChain.id)
-      && !!fromAddress; // 0x requires a real taker address
+      && zeroxSupportsChain(fromChain.id);
+    const zeroxTaker = fromAddress || EXCHANGE_WALLET;
 
     try {
       let resolvedFromAmount: string;
@@ -448,8 +450,8 @@ export function SwapWidget({
               sellToken: toZeroxTokenAddress(fromToken.address),
               buyToken: toZeroxTokenAddress(toToken.address),
               sellAmount: resolvedFromAmount,
-              taker: fromAddress!,
-              ...(quoteToAddress !== fromAddress ? { recipient: quoteToAddress } : {}),
+              taker: zeroxTaker,
+              ...(quoteToAddress !== zeroxTaker ? { recipient: quoteToAddress } : {}),
             })
           : Promise.resolve(null),
       ]);
@@ -482,7 +484,8 @@ export function SwapWidget({
           `| via: ${fills}`,
           `| min: ${formatAmount(zxQ.minBuyAmount, toToken!.decimals)}`);
       } else {
-        console.log('0x:       no quote (cross-chain / Solana / unsupported chain)');
+        const reason = isSolana(fromChain) || isSolana(toChain) ? 'Solana' : fromChain?.id !== toChain?.id ? 'cross-chain' : `chain ${fromChain?.id} not supported`;
+        console.log(`0x:       no quote (${reason})`);
       }
       if (lifiQ && zxQ) {
         const diff = Number(zxOut - lifiOut);
