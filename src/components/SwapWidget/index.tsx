@@ -30,7 +30,7 @@ import { PublicKey, LAMPORTS_PER_SOL, VersionedTransaction, Transaction, SystemP
 import { getAssociatedTokenAddressSync, createAssociatedTokenAccountInstruction, createSyncNativeInstruction } from '@solana/spl-token';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { getChains, getTokens, getQuote, formatAmount, isSolana, type Chain, type Token, type Quote } from '@/lib/lifi';
-import { getZeroxQuote, toZeroxTokenAddress, zeroxSupportsChain, type ZeroxQuote } from '@/lib/zerox';
+import { getZeroxQuote, getZeroxCrossChainQuote, toZeroxTokenAddress, zeroxSupportsChain, type ZeroxQuote, type ZeroxCrossChainQuote } from '@/lib/zerox';
 import { resolveWeb3Name, getWeb3Name, isWeb3Domain, isValidAddress } from '@/lib/spaceid';
 import { ChainSelectModal } from './ChainSelectModal';
 import { TokenSelectModal } from './TokenSelectModal';
@@ -210,8 +210,9 @@ export function SwapWidget({
   const resolveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [quote, setQuote] = useState<Quote | null>(null);
-  const [quoteSource, setQuoteSource] = useState<'lifi' | '0x'>('lifi');
+  const [quoteSource, setQuoteSource] = useState<'lifi' | '0x' | '0x-cross'>('lifi');
   const [zeroxQuote, setZeroxQuote] = useState<ZeroxQuote | null>(null);
+  const [zeroxCrossQuote, setZeroxCrossQuote] = useState<ZeroxCrossChainQuote | null>(null);
   const [loadingTokens, setLoadingTokens] = useState(false);
   const [loadingQuote, setLoadingQuote] = useState(false);
   const [swapping, setSwapping] = useState(false);
@@ -409,15 +410,18 @@ export function SwapWidget({
     setError('');
     setQuote(null);
     setZeroxQuote(null);
-    setQuoteSource('lifi'); // reset until we know the winner
+    setZeroxCrossQuote(null);
+    setQuoteSource('lifi'); // reset until winner is determined
 
-    // 0x is viable for same-chain EVM swaps only.
-    // Use real wallet address as taker if connected; fall back to EXCHANGE_WALLET
-    // for quote comparison (same pattern LiFi uses for unauthenticated quotes).
-    const canUse0x = !isSolana(fromChain) && !isSolana(toChain)
-      && fromChain.id === toChain.id
-      && zeroxSupportsChain(fromChain.id);
-    const zeroxTaker = fromAddress || EXCHANGE_WALLET;
+    const isCrossChain = fromChain.id !== toChain.id;
+    const bothEvm = !isSolana(fromChain) && !isSolana(toChain);
+
+    // 0x single-chain: same EVM chain
+    const canUse0xSingle = bothEvm && !isCrossChain && zeroxSupportsChain(fromChain.id);
+    // 0x cross-chain: different chains (EVM or mixed — let the API decide)
+    const canUse0xCross = isCrossChain;
+
+    const zeroxOrigin = fromAddress || EXCHANGE_WALLET;
 
     try {
       let resolvedFromAmount: string;
@@ -425,7 +429,6 @@ export function SwapWidget({
       if (side === 'from') {
         resolvedFromAmount = parseUnits(amount, fromToken.decimals).toString();
       } else {
-        // Reverse quote: estimate via LiFi ref quote
         const refAmount = parseUnits('1', fromToken.decimals).toString();
         const refQuote = await getQuote({
           fromChain: fromChain.id, toChain: toChain.id,
@@ -438,77 +441,106 @@ export function SwapWidget({
         resolvedFromAmount = ((Number(desiredToRaw) / rate) * 1.03).toFixed(0);
       }
 
-      // Fire LiFi and (optionally) 0x in parallel
-      const [lifiResult, zeroxResult] = await Promise.allSettled([
+      // Fire LiFi + 0x (single or cross) in parallel
+      const [lifiResult, zxSingleResult, zxCrossResult] = await Promise.allSettled([
         getQuote({
           fromChain: fromChain.id, toChain: toChain.id,
           fromToken: fromToken.address, toToken: toToken.address,
           fromAmount: resolvedFromAmount, fromAddress: quoteFromAddress, toAddress: quoteToAddress,
         }),
-        canUse0x
+        canUse0xSingle
           ? getZeroxQuote({
               chainId: fromChain.id,
               sellToken: toZeroxTokenAddress(fromToken.address),
               buyToken: toZeroxTokenAddress(toToken.address),
               sellAmount: resolvedFromAmount,
-              taker: zeroxTaker,
-              ...(quoteToAddress !== zeroxTaker ? { recipient: quoteToAddress } : {}),
+              taker: zeroxOrigin,
+              ...(quoteToAddress !== zeroxOrigin ? { recipient: quoteToAddress } : {}),
+            })
+          : Promise.resolve(null),
+        canUse0xCross
+          ? getZeroxCrossChainQuote({
+              originChain: fromChain.id,
+              destinationChain: toChain.id,
+              sellToken: toZeroxTokenAddress(fromToken.address),
+              buyToken: toZeroxTokenAddress(toToken.address),
+              sellAmount: resolvedFromAmount,
+              originAddress: zeroxOrigin,
+              ...(quoteToAddress && quoteToAddress !== zeroxOrigin ? { destinationAddress: quoteToAddress } : {}),
             })
           : Promise.resolve(null),
       ]);
 
-      const lifiQ = lifiResult.status === 'fulfilled' ? lifiResult.value : null;
-      const zxQ   = zeroxResult.status === 'fulfilled' ? zeroxResult.value : null;
+      const lifiQ  = lifiResult.status === 'fulfilled'     ? lifiResult.value     : null;
+      const zxQ    = zxSingleResult.status === 'fulfilled' ? zxSingleResult.value : null;
+      const zxCrossQ = zxCrossResult.status === 'fulfilled' ? zxCrossResult.value : null;
 
-      if (!lifiQ && !zxQ) throw new Error('No route found');
+      if (!lifiQ && !zxQ && !zxCrossQ) throw new Error('No route found');
 
-      // Pick the source that gives more output tokens
-      const lifiOut = lifiQ ? BigInt(lifiQ.estimate.toAmount) : 0n;
-      const zxOut   = zxQ   ? BigInt(zxQ.buyAmount)           : 0n;
+      const lifiOut   = lifiQ    ? BigInt(lifiQ.estimate.toAmount) : 0n;
+      const zxOut     = zxQ      ? BigInt(zxQ.buyAmount)           : 0n;
+      const zxCrossOut = zxCrossQ ? BigInt(zxCrossQ.buyAmount)     : 0n;
 
       // ── Rate comparison log ───────────────────────────────────────────────
-      console.group(`[Assetux] Quote — ${fromToken?.symbol} → ${toToken?.symbol} (${fromChain?.name})`);
+      const label = isCrossChain
+        ? `${fromChain?.name} → ${toChain?.name} (cross-chain)`
+        : fromChain?.name;
+      console.group(`[Assetux] Quote — ${fromToken?.symbol} → ${toToken?.symbol} | ${label}`);
       console.log('Input:   ', amount, fromToken?.symbol, `(${resolvedFromAmount} raw)`);
       if (lifiQ) {
-        const lifiFormatted = formatAmount(lifiQ.estimate.toAmount, toToken!.decimals);
-        console.log('LI.FI:   ', lifiFormatted, toToken?.symbol,
+        console.log('LI.FI:   ', formatAmount(lifiQ.estimate.toAmount, toToken!.decimals), toToken?.symbol,
           `| tool: ${lifiQ.toolDetails?.name || lifiQ.tool}`,
           `| gas: $${lifiQ.estimate.gasCosts?.[0]?.amountUSD ?? '?'}`,
           `| ~${Math.round((lifiQ.estimate.executionDuration || 30) / 60)}m`);
-      } else {
-        console.log('LI.FI:    no quote');
-      }
+      } else { console.log('LI.FI:    no quote'); }
       if (zxQ) {
-        const zxFormatted = formatAmount(zxQ.buyAmount, toToken!.decimals);
-        const fills = zxQ.route?.fills?.map(f => f.source).join(', ') || '?';
-        console.log('0x:      ', zxFormatted, toToken?.symbol,
-          `| via: ${fills}`,
+        console.log('0x (single): ', formatAmount(zxQ.buyAmount, toToken!.decimals), toToken?.symbol,
+          `| via: ${zxQ.route?.fills?.map(f => f.source).join(', ') || '?'}`,
           `| min: ${formatAmount(zxQ.minBuyAmount, toToken!.decimals)}`);
-      } else {
-        const reason = isSolana(fromChain) || isSolana(toChain) ? 'Solana' : fromChain?.id !== toChain?.id ? 'cross-chain' : `chain ${fromChain?.id} not supported`;
-        console.log(`0x:       no quote (${reason})`);
-      }
-      if (lifiQ && zxQ) {
-        const diff = Number(zxOut - lifiOut);
-        const pct  = lifiOut > 0n ? ((Number(zxOut) / Number(lifiOut) - 1) * 100).toFixed(3) : 'N/A';
-        const winner = zxOut > lifiOut ? '0x' : 'LI.FI';
-        console.log(`Winner:   ${winner} (+${pct}% / ${formatAmount(String(diff < 0 ? -diff : diff), toToken!.decimals)} ${toToken?.symbol})`);
+      } else if (canUse0xSingle) { console.log('0x (single): no quote'); }
+      if (zxCrossQ) {
+        const steps = zxCrossQ.steps.map(s => `${s.type}:${s.provider}`).join(' → ');
+        console.log('0x (cross):  ', formatAmount(zxCrossQ.buyAmount, toToken!.decimals), toToken?.symbol,
+          `| route: ${steps}`,
+          `| ~${zxCrossQ.estimatedTimeSeconds != null ? Math.round(zxCrossQ.estimatedTimeSeconds / 60) + 'm' : '?'}`,
+          `| min: ${formatAmount(zxCrossQ.minBuyAmount, toToken!.decimals)}`);
+      } else if (canUse0xCross) { console.log('0x (cross):   no quote'); }
+
+      // Log winner
+      const allOuts: Array<[string, bigint]> = [
+        ['LI.FI', lifiOut], ['0x', zxOut], ['0x-cross', zxCrossOut],
+      ].filter(([, v]) => (v as bigint) > 0n) as Array<[string, bigint]>;
+      if (allOuts.length > 1) {
+        const [winName, winOut] = allOuts.reduce((a, b) => (b[1] > a[1] ? b : a));
+        const [, baseOut] = allOuts.find(([n]) => n !== winName) ?? allOuts[0];
+        const pct = baseOut > 0n ? ((Number(winOut) / Number(baseOut) - 1) * 100).toFixed(3) : '0';
+        console.log(`Winner:   ${winName} (+${pct}%)`);
       }
       console.groupEnd();
       // ─────────────────────────────────────────────────────────────────────
 
-      if (zxQ && zxOut > lifiOut) {
-        // 0x wins
+      // Pick winner: highest buyAmount
+      const zxCrossWins = zxCrossQ && zxCrossOut > lifiOut && zxCrossOut >= zxOut;
+      const zxSingleWins = zxQ && zxOut > lifiOut && zxOut > zxCrossOut;
+
+      if (zxCrossWins) {
+        setZeroxCrossQuote(zxCrossQ);
         setZeroxQuote(zxQ);
-        setQuote(lifiQ); // keep LiFi for display fallback if needed
+        setQuote(lifiQ);
+        setQuoteSource('0x-cross');
+        if (side === 'from') setToAmount(formatAmount(zxCrossQ!.buyAmount, toToken.decimals));
+        else setFromAmount(formatUnits(BigInt(resolvedFromAmount), fromToken.decimals));
+      } else if (zxSingleWins) {
+        setZeroxQuote(zxQ);
+        setZeroxCrossQuote(zxCrossQ);
+        setQuote(lifiQ);
         setQuoteSource('0x');
-        const outAmount = formatAmount(zxQ.buyAmount, toToken.decimals);
-        if (side === 'from') setToAmount(outAmount);
+        if (side === 'from') setToAmount(formatAmount(zxQ!.buyAmount, toToken.decimals));
         else setFromAmount(formatUnits(BigInt(resolvedFromAmount), fromToken.decimals));
       } else if (lifiQ) {
-        // LiFi wins (or 0x unavailable)
         setQuote(lifiQ);
         setZeroxQuote(zxQ);
+        setZeroxCrossQuote(zxCrossQ);
         setQuoteSource('lifi');
         if (side === 'from') setToAmount(formatAmount(lifiQ.estimate.toAmount, toToken.decimals));
         else setFromAmount(formatUnits(BigInt(lifiQ.action.fromAmount), fromToken.decimals));
@@ -576,10 +608,72 @@ export function SwapWidget({
     }
   };
 
+  // ── handleSwap0xCross — execute via 0x cross-chain transaction ──────────
+  const handleSwap0xCross = async () => {
+    if (!zeroxCrossQuote || !fromToken || !evmAddress || !fromChain) return;
+    setSwapping(true);
+    setError('');
+    try {
+      const chainId = fromChain.id;
+      if (chainId !== publicClient?.chain.id) {
+        try { await switchChainAsync({ chainId }); } catch {
+          throw new Error(`Please switch to ${fromChain.name} in your wallet`);
+        }
+      }
+
+      const freshWallet = await getWalletClient(wagmiConfig, { chainId });
+      const freshPublic = getPublicClient(wagmiConfig, { chainId });
+      if (!freshWallet || !freshPublic) throw new Error('Could not get wallet client');
+
+      // ERC-20 approval if needed
+      const isNative = fromToken.address === NATIVE;
+      const sellAmount = zeroxCrossQuote.transaction?.details?.value
+        ? BigInt(zeroxCrossQuote.transaction.details.value) : 0n;
+      if (!isNative && zeroxCrossQuote.allowanceTarget) {
+        const allowance = await freshPublic.readContract({
+          address: fromToken.address as `0x${string}`,
+          abi: erc20Abi,
+          functionName: 'allowance',
+          args: [evmAddress, zeroxCrossQuote.allowanceTarget as `0x${string}`],
+        });
+        // Use a large fixed amount since we don't have sellAmount separately
+        const needed = sellAmount || parseUnits('999999', fromToken.decimals);
+        if ((allowance as bigint) < needed) {
+          const ah = await freshWallet.writeContract({
+            address: fromToken.address as `0x${string}`,
+            abi: erc20Abi,
+            functionName: 'approve',
+            args: [zeroxCrossQuote.allowanceTarget as `0x${string}`, needed],
+          });
+          await freshPublic.waitForTransactionReceipt({ hash: ah });
+        }
+      }
+
+      const details = zeroxCrossQuote.transaction.details;
+      const hash = await freshWallet.sendTransaction({
+        to: details.to as `0x${string}`,
+        data: details.data as `0x${string}`,
+        value: details.value ? BigInt(details.value) : 0n,
+        ...(details.gas ? { gas: BigInt(details.gas) } : {}),
+      });
+      await freshPublic.waitForTransactionReceipt({ hash });
+      setSuccess(`Cross-chain swap initiated via 0x! Tx: ${hash}`);
+      setQuote(null); setZeroxQuote(null); setZeroxCrossQuote(null); setFromAmount(''); setToAmount('');
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSwapping(false);
+    }
+  };
+
   // ── handleSwap ────────────────────────────────────────────────────────────
   const handleSwap = async () => {
     if (quoteSource === '0x' && zeroxQuote) {
       await handleSwap0x();
+      return;
+    }
+    if (quoteSource === '0x-cross' && zeroxCrossQuote) {
+      await handleSwap0xCross();
       return;
     }
     if (!fromToken) return;
@@ -738,7 +832,7 @@ export function SwapWidget({
     setFromToken(toToken); setToToken(fromToken);
     setFromTokens(toTokens); setToTokens(fromTokens);
     setFromAmount(toAmount); setToAmount(fromAmount);
-    setQuote(null); setZeroxQuote(null); setQuoteSource('lifi');
+    setQuote(null); setZeroxQuote(null); setZeroxCrossQuote(null); setQuoteSource('lifi');
     // Clear custom toAddress if set — sides are flipped
     setToAddressInput('');
     setToAddressResolved(null);
@@ -1039,7 +1133,7 @@ export function SwapWidget({
         </Collapse>
 
         {/* Quote details */}
-        {!usdMode && (quote || zeroxQuote) && (
+        {!usdMode && (quote || zeroxQuote || zeroxCrossQuote) && (
           <Box sx={{ p: 1.5, borderRadius: 2, background: 'rgba(72,158,255,0.05)', border: '1px solid rgba(72,158,255,0.12)', mb: 2 }}>
             {/* Source badge */}
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
@@ -1047,22 +1141,24 @@ export function SwapWidget({
               <Box sx={{ display: 'flex', gap: 0.5 }}>
                 <Chip
                   label={
-                    quoteSource === '0x'
-                      ? '0x Protocol ✓'
-                      : fromChain && toChain && fromChain.id !== toChain.id
-                        ? `LI.FI ✓ (cross-chain)`
-                        : (quote?.toolDetails?.name || quote?.tool || 'LI.FI ✓')
+                    quoteSource === '0x'      ? '0x Protocol ✓' :
+                    quoteSource === '0x-cross' ? '0x Cross-Chain ✓' :
+                    fromChain && toChain && fromChain.id !== toChain.id
+                      ? `LI.FI ✓ (cross-chain)`
+                      : (quote?.toolDetails?.name || quote?.tool || 'LI.FI ✓')
                   }
                   size="small"
                   sx={{ height: 20, fontSize: 11,
-                    background: quoteSource === '0x' ? 'rgba(0,175,255,0.15)' : 'rgba(72,158,255,0.15)',
-                    color: quoteSource === '0x' ? '#00AFFF' : 'primary.main' }}
+                    background: quoteSource === '0x' || quoteSource === '0x-cross'
+                      ? 'rgba(0,175,255,0.15)' : 'rgba(72,158,255,0.15)',
+                    color: quoteSource === '0x' || quoteSource === '0x-cross'
+                      ? '#00AFFF' : 'primary.main' }}
                 />
               </Box>
             </Box>
 
-            {/* Both quotes side-by-side when available */}
-            {quote && zeroxQuote && (
+            {/* All quotes side-by-side when multiple are available */}
+            {(zeroxQuote || zeroxCrossQuote) && quote && (
               <Box sx={{ display: 'flex', gap: 1, mb: 1, p: 1, borderRadius: 1.5, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
                 <Box sx={{ flex: 1, textAlign: 'center' }}>
                   <Typography variant="caption" color="text.secondary" display="block">LI.FI</Typography>
@@ -1071,13 +1167,24 @@ export function SwapWidget({
                     {quoteSource === 'lifi' && <span style={{ marginLeft: 4 }}>★</span>}
                   </Typography>
                 </Box>
-                <Box sx={{ flex: 1, textAlign: 'center' }}>
-                  <Typography variant="caption" color="text.secondary" display="block">0x</Typography>
-                  <Typography variant="caption" sx={{ fontWeight: 700, color: quoteSource === '0x' ? '#00AFFF' : 'text.secondary' }}>
-                    {formatAmount(zeroxQuote.buyAmount, toToken?.decimals ?? 6)} {toToken?.symbol}
-                    {quoteSource === '0x' && <span style={{ marginLeft: 4 }}>★</span>}
-                  </Typography>
-                </Box>
+                {zeroxQuote && (
+                  <Box sx={{ flex: 1, textAlign: 'center' }}>
+                    <Typography variant="caption" color="text.secondary" display="block">0x</Typography>
+                    <Typography variant="caption" sx={{ fontWeight: 700, color: quoteSource === '0x' ? '#00AFFF' : 'text.secondary' }}>
+                      {formatAmount(zeroxQuote.buyAmount, toToken?.decimals ?? 6)} {toToken?.symbol}
+                      {quoteSource === '0x' && <span style={{ marginLeft: 4 }}>★</span>}
+                    </Typography>
+                  </Box>
+                )}
+                {zeroxCrossQuote && (
+                  <Box sx={{ flex: 1, textAlign: 'center' }}>
+                    <Typography variant="caption" color="text.secondary" display="block">0x Cross</Typography>
+                    <Typography variant="caption" sx={{ fontWeight: 700, color: quoteSource === '0x-cross' ? '#00AFFF' : 'text.secondary' }}>
+                      {formatAmount(zeroxCrossQuote.buyAmount, toToken?.decimals ?? 6)} {toToken?.symbol}
+                      {quoteSource === '0x-cross' && <span style={{ marginLeft: 4 }}>★</span>}
+                    </Typography>
+                  </Box>
+                )}
               </Box>
             )}
 
@@ -1093,6 +1200,29 @@ export function SwapWidget({
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
                     <Typography variant="caption" color="text.secondary">Via</Typography>
                     <Typography variant="caption">{zeroxQuote.route.fills[0].source}</Typography>
+                  </Box>
+                )}
+              </>
+            ) : quoteSource === '0x-cross' && zeroxCrossQuote ? (
+              <>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary">Min received</Typography>
+                  <Typography variant="caption">
+                    {toToken ? `${formatAmount(zeroxCrossQuote.minBuyAmount, toToken.decimals)} ${toToken.symbol}` : '—'}
+                  </Typography>
+                </Box>
+                {zeroxCrossQuote.estimatedTimeSeconds != null && (
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                    <Typography variant="caption" color="text.secondary">Est. time</Typography>
+                    <Typography variant="caption">{Math.round(zeroxCrossQuote.estimatedTimeSeconds / 60)}m</Typography>
+                  </Box>
+                )}
+                {zeroxCrossQuote.steps.length > 0 && (
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                    <Typography variant="caption" color="text.secondary">Route</Typography>
+                    <Typography variant="caption">
+                      {zeroxCrossQuote.steps.map(s => s.provider).filter(Boolean).join(' → ') || zeroxCrossQuote.steps.map(s => s.type).join(' → ')}
+                    </Typography>
                   </Box>
                 )}
               </>
@@ -1200,7 +1330,7 @@ export function SwapWidget({
           </>
         ) : !isFromConnected ? (
           <WalletConnectSection />
-        ) : !(quote || zeroxQuote) ? (
+        ) : !(quote || zeroxQuote || zeroxCrossQuote) ? (
           <Button variant="contained" fullWidth size="large"
             onClick={() => fetchQuote(activeInput.current, activeInput.current === 'from' ? fromAmount : toAmount)}
             disabled={!fromAmount && !toAmount || !fromToken || !toToken || loadingQuote || !toAddressOk || toAddressResolving}
@@ -1211,12 +1341,12 @@ export function SwapWidget({
           <Button variant="contained" fullWidth size="large" onClick={handleSwap}
             disabled={swapping || !toAddressOk || toAddressResolving}
             sx={{ borderRadius: 2, py: 1.5, fontWeight: 700,
-              background: quoteSource === '0x'
+              background: quoteSource === '0x' || quoteSource === '0x-cross'
                 ? 'linear-gradient(135deg,#00AFFF,#0070CC)'
                 : undefined }}>
             {swapping
               ? <CircularProgress size={22} color="inherit" />
-              : `Swap ${fromToken?.symbol} → ${toToken?.symbol} via ${quoteSource === '0x' ? '0x' : 'LI.FI'}`}
+              : `Swap ${fromToken?.symbol} → ${toToken?.symbol} via ${quoteSource === '0x' ? '0x' : quoteSource === '0x-cross' ? '0x Cross-Chain' : 'LI.FI'}`}
           </Button>
         )}
       </Paper>
