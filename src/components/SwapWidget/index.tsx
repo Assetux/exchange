@@ -409,6 +409,7 @@ export function SwapWidget({
     setError('');
     setQuote(null);
     setZeroxQuote(null);
+    setQuoteSource('lifi'); // reset until we know the winner
 
     // 0x is viable for same-chain EVM swaps only.
     // Use real wallet address as taker if connected; fall back to EXCHANGE_WALLET
@@ -581,11 +582,18 @@ export function SwapWidget({
       await handleSwap0x();
       return;
     }
-    if (!quote?.transactionRequest || !fromToken) return;
+    if (!fromToken) return;
+    if (!quote?.transactionRequest) {
+      setError('No transaction data in quote — please click GET QUOTE again to refresh.');
+      return;
+    }
     setSwapping(true);
     setError('');
+    const isCrossChain = fromChain && toChain && fromChain.id !== toChain.id;
+    console.group(`[Assetux] Swap — ${fromToken?.symbol} → ${toToken?.symbol} via LI.FI${isCrossChain ? ' (cross-chain)' : ''}`);
     try {
       const tx = quote.transactionRequest;
+      console.log('tx.to:', tx.to, '| chainId:', tx.chainId, '| value:', tx.value, '| gasLimit:', tx.gasLimit);
       if (isSolana(fromChain)) {
         if (!solPublicKey) throw new Error('Connect Solana wallet');
 
@@ -639,8 +647,10 @@ export function SwapWidget({
       if (!evmAddress) throw new Error('Connect EVM wallet');
 
       const targetChainId = tx.chainId as number;
+      console.log('1. target chain:', targetChainId, '| wallet chain:', publicClient?.chain.id);
 
       if (targetChainId && targetChainId !== publicClient?.chain.id) {
+        console.log('2. switching chain to', targetChainId);
         try { await switchChainAsync({ chainId: targetChainId }); } catch {
           throw new Error(`Please switch your wallet to the required network (chain ${targetChainId})`);
         }
@@ -649,16 +659,20 @@ export function SwapWidget({
       const freshWallet = await getWalletClient(wagmiConfig, { chainId: targetChainId });
       const freshPublic = getPublicClient(wagmiConfig, { chainId: targetChainId });
       if (!freshWallet || !freshPublic) throw new Error('Could not get wallet client for chain ' + targetChainId);
+      console.log('3. got wallet client for chain', targetChainId);
 
       const isNative = fromToken.address === NATIVE;
       if (!isNative && quote.estimate.approvalAddress) {
+        console.log('4. checking ERC-20 allowance for', fromToken.symbol, 'spender:', quote.estimate.approvalAddress);
         const allowance = await freshPublic.readContract({
           address: fromToken.address as `0x${string}`,
           abi: erc20Abi,
           functionName: 'allowance',
           args: [evmAddress, quote.estimate.approvalAddress as `0x${string}`],
         });
+        console.log('   allowance:', allowance, '| needed:', quote.action.fromAmount);
         if (allowance < BigInt(quote.action.fromAmount)) {
+          console.log('4a. sending approve tx');
           const ah = await freshWallet.writeContract({
             address: fromToken.address as `0x${string}`,
             abi: erc20Abi,
@@ -666,19 +680,26 @@ export function SwapWidget({
             args: [quote.estimate.approvalAddress as `0x${string}`, BigInt(quote.action.fromAmount)],
           });
           await freshPublic.waitForTransactionReceipt({ hash: ah });
+          console.log('4b. approval confirmed:', ah);
         }
       }
 
+      console.log('5. sending swap tx to', tx.to, 'value:', tx.value);
       const hash = await freshWallet.sendTransaction({
         to: tx.to as `0x${string}`,
         data: tx.data as `0x${string}`,
         value: tx.value ? BigInt(tx.value) : 0n,
         gas: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
       });
+      console.log('6. tx sent:', hash, '— waiting for receipt…');
       await freshPublic.waitForTransactionReceipt({ hash });
+      console.log('7. confirmed!');
+      console.groupEnd();
       setSuccess(`Swap complete! Tx: ${hash}`);
       setQuote(null); setFromAmount(''); setToAmount('');
     } catch (e: any) {
+      console.error('[Assetux] Swap error:', e);
+      console.groupEnd();
       setError(e.message);
     } finally {
       setSwapping(false);
@@ -717,7 +738,7 @@ export function SwapWidget({
     setFromToken(toToken); setToToken(fromToken);
     setFromTokens(toTokens); setToTokens(fromTokens);
     setFromAmount(toAmount); setToAmount(fromAmount);
-    setQuote(null); setZeroxQuote(null);
+    setQuote(null); setZeroxQuote(null); setQuoteSource('lifi');
     // Clear custom toAddress if set — sides are flipped
     setToAddressInput('');
     setToAddressResolved(null);
@@ -1025,7 +1046,13 @@ export function SwapWidget({
               <Typography variant="caption" color="text.secondary">Best route</Typography>
               <Box sx={{ display: 'flex', gap: 0.5 }}>
                 <Chip
-                  label={quoteSource === '0x' ? '0x Protocol ✓' : (quote?.toolDetails?.name || quote?.tool || 'LI.FI ✓')}
+                  label={
+                    quoteSource === '0x'
+                      ? '0x Protocol ✓'
+                      : fromChain && toChain && fromChain.id !== toChain.id
+                        ? `LI.FI ✓ (cross-chain)`
+                        : (quote?.toolDetails?.name || quote?.tool || 'LI.FI ✓')
+                  }
                   size="small"
                   sx={{ height: 20, fontSize: 11,
                     background: quoteSource === '0x' ? 'rgba(0,175,255,0.15)' : 'rgba(72,158,255,0.15)',
