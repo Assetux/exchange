@@ -110,6 +110,7 @@ const DEFAULTS: Record<string, string[]> = {
     'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
     'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
     'cyaiYgJhfSuFY7yz8iNeBwsD1XNDzZXVBEGubuuxdma',  // ASX
+    'Yt9PdC1GssVbiCr2y7rWpXcJm28g1kcEAY8GrNgcyai',  // HOTPOT
   ],
 };
 
