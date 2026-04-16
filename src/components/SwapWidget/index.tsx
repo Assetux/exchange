@@ -30,6 +30,7 @@ import { PublicKey, LAMPORTS_PER_SOL, VersionedTransaction, Transaction, SystemP
 import { getAssociatedTokenAddressSync, createAssociatedTokenAccountInstruction, createSyncNativeInstruction } from '@solana/spl-token';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { getChains, getTokens, getQuote, formatAmount, isSolana, type Chain, type Token, type Quote } from '@/lib/lifi';
+import { getJupiterQuote, getJupiterSwapTx, USDC_SOLANA, WSOL, type JupiterQuoteResponse } from '@/lib/jupiter';
 import { getZeroxQuote, getZeroxCrossChainQuote, toZeroxTokenAddress, zeroxSupportsChain, type ZeroxQuote, type ZeroxCrossChainQuote } from '@/lib/zerox';
 import { resolveWeb3Name, getWeb3Name, isWeb3Domain, isValidAddress } from '@/lib/spaceid';
 import { ChainSelectModal } from './ChainSelectModal';
@@ -210,9 +211,12 @@ export function SwapWidget({
   const resolveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [quote, setQuote] = useState<Quote | null>(null);
-  const [quoteSource, setQuoteSource] = useState<'lifi' | '0x' | '0x-cross'>('lifi');
+  const [quoteSource, setQuoteSource] = useState<'lifi' | '0x' | '0x-cross' | 'jupiter' | 'lifi+jupiter'>('lifi');
   const [zeroxQuote, setZeroxQuote] = useState<ZeroxQuote | null>(null);
   const [zeroxCrossQuote, setZeroxCrossQuote] = useState<ZeroxCrossChainQuote | null>(null);
+  const [jupiterQuote, setJupiterQuote] = useState<JupiterQuoteResponse | null>(null);
+  const [bridgeToUsdcQuote, setBridgeToUsdcQuote] = useState<Quote | null>(null);
+  const [jupiterSwapStep, setJupiterSwapStep] = useState<'idle' | 'bridging' | 'awaiting-usdc' | 'swapping'>('idle');
   const [loadingTokens, setLoadingTokens] = useState(false);
   const [loadingQuote, setLoadingQuote] = useState(false);
   const [swapping, setSwapping] = useState(false);
@@ -411,6 +415,9 @@ export function SwapWidget({
     setQuote(null);
     setZeroxQuote(null);
     setZeroxCrossQuote(null);
+    setJupiterQuote(null);
+    setBridgeToUsdcQuote(null);
+    setJupiterSwapStep('idle');
     setQuoteSource('lifi'); // reset until winner is determined
 
     const isCrossChain = fromChain.id !== toChain.id;
@@ -475,7 +482,44 @@ export function SwapWidget({
       const zxQ    = zxSingleResult.status === 'fulfilled' ? zxSingleResult.value : null;
       const zxCrossQ = zxCrossResult.status === 'fulfilled' ? zxCrossResult.value : null;
 
-      if (!lifiQ && !zxQ && !zxCrossQ) throw new Error('No route found');
+      if (!lifiQ && !zxQ && !zxCrossQ) {
+        // ── Jupiter fallback for Solana destinations ────────────────────────
+        if (toIsSolana) {
+          if (isSolana(fromChain)) {
+            // Solana → Solana: direct Jupiter swap
+            const inputMint = fromToken.address === NATIVE ? WSOL : fromToken.address;
+            const jupQ = await getJupiterQuote({ inputMint, outputMint: toToken.address, amount: resolvedFromAmount });
+            setJupiterQuote(jupQ);
+            setQuoteSource('jupiter');
+            console.log('[Assetux] Jupiter fallback (Solana→Solana):', formatAmount(jupQ.outAmount, toToken.decimals), toToken.symbol);
+            if (side === 'from') setToAmount(formatAmount(jupQ.outAmount, toToken.decimals));
+            else setFromAmount(formatUnits(BigInt(resolvedFromAmount), fromToken.decimals));
+            return;
+          } else {
+            // EVM → Solana: LI.FI bridge to USDC on Solana + Jupiter swap USDC→target
+            const solDest = quoteToAddress !== SOLANA_PLACEHOLDER ? quoteToAddress : (solPublicKey?.toBase58() || SOLANA_PLACEHOLDER);
+            const bridgeQ = await getQuote({
+              fromChain: fromChain.id, toChain: toChain.id,
+              fromToken: fromToken.address, toToken: USDC_SOLANA,
+              fromAmount: resolvedFromAmount, fromAddress: quoteFromAddress,
+              toAddress: solDest,
+            });
+            const jupQ = await getJupiterQuote({
+              inputMint: USDC_SOLANA,
+              outputMint: toToken.address,
+              amount: bridgeQ.estimate.toAmountMin, // conservative: use min bridge output
+            });
+            setBridgeToUsdcQuote(bridgeQ);
+            setJupiterQuote(jupQ);
+            setQuoteSource('lifi+jupiter');
+            console.log('[Assetux] LI.FI+Jupiter fallback: bridge→', formatAmount(bridgeQ.estimate.toAmountMin, 6), 'USDC → Jupiter→', formatAmount(jupQ.outAmount, toToken.decimals), toToken.symbol);
+            if (side === 'from') setToAmount(formatAmount(jupQ.outAmount, toToken.decimals));
+            else setFromAmount(formatUnits(BigInt(resolvedFromAmount), fromToken.decimals));
+            return;
+          }
+        }
+        throw new Error('No route found');
+      }
 
       const lifiOut   = lifiQ    ? BigInt(lifiQ.estimate.toAmount) : 0n;
       const zxOut     = zxQ      ? BigInt(zxQ.buyAmount)           : 0n;
@@ -551,6 +595,113 @@ export function SwapWidget({
       setLoadingQuote(false);
     }
   }, [fromChain, toChain, fromToken, toToken, fromAddress, effectiveToAddress]);
+
+  // ── handleSwapJupiter — Solana→Solana direct Jupiter swap ───────────────
+  const handleSwapJupiter = async () => {
+    if (!jupiterQuote || !fromToken || !toToken || !solPublicKey) return;
+    setSwapping(true);
+    setError('');
+    try {
+      const { swapTransaction } = await getJupiterSwapTx({
+        quoteResponse: jupiterQuote,
+        userPublicKey: solPublicKey.toBase58(),
+      });
+      const txBytes = Uint8Array.from(atob(swapTransaction), c => c.charCodeAt(0));
+      const tx = VersionedTransaction.deserialize(txBytes);
+      const sig = await sendSolanaTransaction(tx, solanaConnection);
+      await solanaConnection.confirmTransaction(sig, 'confirmed');
+      setSuccess(`Swapped via Jupiter! Sig: ${sig.slice(0, 16)}…`);
+      setJupiterQuote(null); setFromAmount(''); setToAmount('');
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSwapping(false);
+    }
+  };
+
+  // ── handleSwapLifiJupiter — EVM→Solana: LI.FI bridge USDC + Jupiter swap ─
+  const handleSwapLifiJupiter = async () => {
+    if (!bridgeToUsdcQuote || !jupiterQuote || !solPublicKey || !evmAddress || !fromChain || !fromToken || !toToken) return;
+    setSwapping(true);
+    setError('');
+    try {
+      const tx = bridgeToUsdcQuote.transactionRequest;
+      if (!tx) throw new Error('No bridge transaction from LI.FI — please refresh the quote');
+
+      // ── Step 1: Bridge EVM → USDC on Solana ──────────────────────────────
+      setJupiterSwapStep('bridging');
+      const targetChainId = tx.chainId as number;
+      if (targetChainId && targetChainId !== publicClient?.chain.id) {
+        try { await switchChainAsync({ chainId: targetChainId }); }
+        catch { throw new Error(`Please switch to chain ${targetChainId} in your wallet`); }
+      }
+      const freshWallet = await getWalletClient(wagmiConfig, { chainId: targetChainId });
+      const freshPublic = getPublicClient(wagmiConfig, { chainId: targetChainId });
+      if (!freshWallet || !freshPublic) throw new Error('Could not get wallet client');
+
+      const isNative = fromToken.address === NATIVE;
+      if (!isNative && bridgeToUsdcQuote.estimate.approvalAddress) {
+        const allowance = await freshPublic.readContract({
+          address: fromToken.address as `0x${string}`, abi: erc20Abi,
+          functionName: 'allowance',
+          args: [evmAddress, bridgeToUsdcQuote.estimate.approvalAddress as `0x${string}`],
+        });
+        if ((allowance as bigint) < BigInt(bridgeToUsdcQuote.action.fromAmount)) {
+          const ah = await freshWallet.writeContract({
+            address: fromToken.address as `0x${string}`, abi: erc20Abi,
+            functionName: 'approve',
+            args: [bridgeToUsdcQuote.estimate.approvalAddress as `0x${string}`, BigInt(bridgeToUsdcQuote.action.fromAmount)],
+          });
+          await freshPublic.waitForTransactionReceipt({ hash: ah });
+        }
+      }
+
+      const bridgeHash = await freshWallet.sendTransaction({
+        to: tx.to as `0x${string}`, data: tx.data as `0x${string}`,
+        value: tx.value ? BigInt(tx.value) : 0n,
+        gas: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
+      });
+      await freshPublic.waitForTransactionReceipt({ hash: bridgeHash });
+
+      // ── Step 2: Wait for USDC to arrive on Solana ────────────────────────
+      setJupiterSwapStep('awaiting-usdc');
+      const usdcMint = new PublicKey(USDC_SOLANA);
+      const usdcAta = getAssociatedTokenAddressSync(usdcMint, solPublicKey);
+      const expectedUsdc = BigInt(bridgeToUsdcQuote.estimate.toAmountMin);
+      let arrived = false;
+      for (let i = 0; i < 120; i++) { // poll every 5s for up to 10 min
+        await new Promise(r => setTimeout(r, 5000));
+        try {
+          const bal = await solanaConnection.getTokenAccountBalance(usdcAta);
+          if (BigInt(bal.value.amount) >= expectedUsdc) { arrived = true; break; }
+        } catch { /* ATA may not exist yet */ }
+      }
+      if (!arrived) throw new Error('USDC did not arrive on Solana within 10 minutes. Your bridge is still processing — the Jupiter swap did not execute. Complete it manually once USDC arrives.');
+
+      // ── Step 3: Jupiter swap USDC → target token ─────────────────────────
+      setJupiterSwapStep('swapping');
+      const freshJupQ = await getJupiterQuote({
+        inputMint: USDC_SOLANA,
+        outputMint: toToken.address,
+        amount: bridgeToUsdcQuote.estimate.toAmountMin,
+      });
+      const { swapTransaction } = await getJupiterSwapTx({
+        quoteResponse: freshJupQ,
+        userPublicKey: solPublicKey.toBase58(),
+      });
+      const txBytes = Uint8Array.from(atob(swapTransaction), c => c.charCodeAt(0));
+      const solTx = VersionedTransaction.deserialize(txBytes);
+      const sig = await sendSolanaTransaction(solTx, solanaConnection);
+      await solanaConnection.confirmTransaction(sig, 'confirmed');
+      setSuccess(`Bridge + Jupiter swap complete! Solana tx: ${sig.slice(0, 16)}…`);
+      setBridgeToUsdcQuote(null); setJupiterQuote(null); setFromAmount(''); setToAmount('');
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSwapping(false);
+      setJupiterSwapStep('idle');
+    }
+  };
 
   // ── handleSwap0x — execute via 0x allowance-holder router ───────────────
   const handleSwap0x = async () => {
@@ -674,6 +825,14 @@ export function SwapWidget({
     }
     if (quoteSource === '0x-cross' && zeroxCrossQuote) {
       await handleSwap0xCross();
+      return;
+    }
+    if (quoteSource === 'jupiter' && jupiterQuote) {
+      await handleSwapJupiter();
+      return;
+    }
+    if (quoteSource === 'lifi+jupiter') {
+      await handleSwapLifiJupiter();
       return;
     }
     if (!fromToken) return;
@@ -832,7 +991,7 @@ export function SwapWidget({
     setFromToken(toToken); setToToken(fromToken);
     setFromTokens(toTokens); setToTokens(fromTokens);
     setFromAmount(toAmount); setToAmount(fromAmount);
-    setQuote(null); setZeroxQuote(null); setZeroxCrossQuote(null); setQuoteSource('lifi');
+    setQuote(null); setZeroxQuote(null); setZeroxCrossQuote(null); setJupiterQuote(null); setBridgeToUsdcQuote(null); setQuoteSource('lifi');
     // Clear custom toAddress if set — sides are flipped
     setToAddressInput('');
     setToAddressResolved(null);
@@ -1133,7 +1292,7 @@ export function SwapWidget({
         </Collapse>
 
         {/* Quote details */}
-        {!usdMode && (quote || zeroxQuote || zeroxCrossQuote) && (
+        {!usdMode && (quote || zeroxQuote || zeroxCrossQuote || jupiterQuote) && (
           <Box sx={{ p: 1.5, borderRadius: 2, background: 'rgba(72,158,255,0.05)', border: '1px solid rgba(72,158,255,0.12)', mb: 2 }}>
             {/* Source badge */}
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
@@ -1141,8 +1300,10 @@ export function SwapWidget({
               <Box sx={{ display: 'flex', gap: 0.5 }}>
                 <Chip
                   label={
-                    quoteSource === '0x'      ? '0x Protocol ✓' :
-                    quoteSource === '0x-cross' ? '0x Cross-Chain ✓' :
+                    quoteSource === '0x'          ? '0x Protocol ✓' :
+                    quoteSource === '0x-cross'    ? '0x Cross-Chain ✓' :
+                    quoteSource === 'jupiter'     ? 'Jupiter ✓' :
+                    quoteSource === 'lifi+jupiter' ? 'LI.FI Bridge + Jupiter ✓' :
                     fromChain && toChain && fromChain.id !== toChain.id
                       ? `LI.FI ✓ (cross-chain)`
                       : (quote?.toolDetails?.name || quote?.tool || 'LI.FI ✓')
@@ -1150,9 +1311,15 @@ export function SwapWidget({
                   size="small"
                   sx={{ height: 20, fontSize: 11,
                     background: quoteSource === '0x' || quoteSource === '0x-cross'
-                      ? 'rgba(0,175,255,0.15)' : 'rgba(72,158,255,0.15)',
+                      ? 'rgba(0,175,255,0.15)'
+                      : quoteSource === 'jupiter' || quoteSource === 'lifi+jupiter'
+                      ? 'rgba(153,69,255,0.15)'
+                      : 'rgba(72,158,255,0.15)',
                     color: quoteSource === '0x' || quoteSource === '0x-cross'
-                      ? '#00AFFF' : 'primary.main' }}
+                      ? '#00AFFF'
+                      : quoteSource === 'jupiter' || quoteSource === 'lifi+jupiter'
+                      ? '#9945FF'
+                      : 'primary.main' }}
                 />
               </Box>
             </Box>
@@ -1222,6 +1389,55 @@ export function SwapWidget({
                     <Typography variant="caption" color="text.secondary">Route</Typography>
                     <Typography variant="caption">
                       {zeroxCrossQuote.steps.map(s => s.provider).filter(Boolean).join(' → ') || zeroxCrossQuote.steps.map(s => s.type).join(' → ')}
+                    </Typography>
+                  </Box>
+                )}
+              </>
+            ) : quoteSource === 'jupiter' && jupiterQuote ? (
+              <>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary">Min received</Typography>
+                  <Typography variant="caption">
+                    {toToken ? `${formatAmount(jupiterQuote.otherAmountThreshold, toToken.decimals)} ${toToken.symbol}` : '—'}
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary">Price impact</Typography>
+                  <Typography variant="caption">{parseFloat(jupiterQuote.priceImpactPct).toFixed(3)}%</Typography>
+                </Box>
+                {jupiterQuote.routePlan[0]?.swapInfo?.label && (
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                    <Typography variant="caption" color="text.secondary">Via</Typography>
+                    <Typography variant="caption">{jupiterQuote.routePlan.map(r => r.swapInfo.label || r.swapInfo.ammKey.slice(0, 8)).join(' + ')}</Typography>
+                  </Box>
+                )}
+              </>
+            ) : quoteSource === 'lifi+jupiter' && bridgeToUsdcQuote && jupiterQuote ? (
+              <>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary">Step 1</Typography>
+                  <Typography variant="caption">Bridge → {formatAmount(bridgeToUsdcQuote.estimate.toAmountMin, 6)} USDC on Solana</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary">Step 2</Typography>
+                  <Typography variant="caption">Jupiter: USDC → {formatAmount(jupiterQuote.outAmount, toToken?.decimals ?? 6)} {toToken?.symbol}</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary">Bridge time</Typography>
+                  <Typography variant="caption">{Math.round((bridgeToUsdcQuote.estimate.executionDuration || 120) / 60)}m</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary">Min received</Typography>
+                  <Typography variant="caption">
+                    {toToken ? `${formatAmount(jupiterQuote.otherAmountThreshold, toToken.decimals)} ${toToken.symbol}` : '—'}
+                  </Typography>
+                </Box>
+                {jupiterSwapStep !== 'idle' && (
+                  <Box sx={{ mt: 1, p: 1, borderRadius: 1, background: 'rgba(153,69,255,0.1)', border: '1px solid rgba(153,69,255,0.2)' }}>
+                    <Typography variant="caption" sx={{ color: '#9945FF' }}>
+                      {jupiterSwapStep === 'bridging'      ? '⏳ Step 1: Bridging to USDC on Solana…' :
+                       jupiterSwapStep === 'awaiting-usdc' ? '⏳ Step 2: Waiting for USDC to arrive on Solana…' :
+                       jupiterSwapStep === 'swapping'      ? '⏳ Step 3: Executing Jupiter swap…' : ''}
                     </Typography>
                   </Box>
                 )}
@@ -1343,10 +1559,17 @@ export function SwapWidget({
             sx={{ borderRadius: 2, py: 1.5, fontWeight: 700,
               background: quoteSource === '0x' || quoteSource === '0x-cross'
                 ? 'linear-gradient(135deg,#00AFFF,#0070CC)'
+                : quoteSource === 'jupiter' || quoteSource === 'lifi+jupiter'
+                ? 'linear-gradient(135deg,#9945FF,#6B2FCC)'
                 : undefined }}>
             {swapping
               ? <CircularProgress size={22} color="inherit" />
-              : `Swap ${fromToken?.symbol} → ${toToken?.symbol} via ${quoteSource === '0x' ? '0x' : quoteSource === '0x-cross' ? '0x Cross-Chain' : 'LI.FI'}`}
+              : `Swap ${fromToken?.symbol} → ${toToken?.symbol} via ${
+                quoteSource === '0x'           ? '0x' :
+                quoteSource === '0x-cross'     ? '0x Cross-Chain' :
+                quoteSource === 'jupiter'      ? 'Jupiter' :
+                quoteSource === 'lifi+jupiter' ? 'LI.FI + Jupiter' :
+                'LI.FI'}`}
           </Button>
         )}
       </Paper>
