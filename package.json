@@ -10,6 +10,7 @@
   "dependencies": {
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
+    "@meteora-ag/dynamic-bonding-curve-sdk": "^1.5.7",
     "@mui/icons-material": "^7.3.9",
     "@mui/material": "^7.3.9",
     "@rainbow-me/rainbowkit": "^2.2.10",
@@ -31,6 +32,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/bn.js": "^5.2.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

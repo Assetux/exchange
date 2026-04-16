@@ -1,5 +1,8 @@
-// Solana DEX aggregator — Jupiter (primary) + Raydium (fallback)
+// Solana DEX aggregator — Jupiter (primary) + Raydium (fallback) + Meteora DBC (tertiary)
 // Jupiter migrated from quote-api.jup.ag/v6 to api.jup.ag/swap/v1 in Dec 2024.
+// Meteora DBC is used for SOL-paired bonding curve pools (pre-graduation tokens like ASX, HOTPOT).
+
+import type { Connection } from '@solana/web3.js';
 
 const JUPITER_API_KEY = process.env.NEXT_PUBLIC_JUPITER_API_KEY;
 const JUPITER_BASE = JUPITER_API_KEY
@@ -13,8 +16,8 @@ export const WSOL = 'So11111111111111111111111111111111111111112';
 
 // ── Normalized quote returned by getSolanaQuote ───────────────────────────────
 export interface SolanaSwapQuote {
-  source: 'jupiter' | 'raydium';
-  inputMint: string;
+  source: 'jupiter' | 'raydium' | 'meteora-dbc';
+  inputMint: string;   // USDC_SOLANA for jupiter/raydium; WSOL for meteora-dbc
   outputMint: string;
   inAmount: string;
   outAmount: string;
@@ -22,7 +25,7 @@ export interface SolanaSwapQuote {
   priceImpactPct: string;
   routeLabel: string;           // human-readable DEX name(s)
   // raw response kept for tx building
-  _raw: JupiterQuoteResponse | RaydiumComputeData;
+  _raw: JupiterQuoteResponse | RaydiumComputeData | import('./meteora').MeteoraDbcQuote;
 }
 
 // ── Jupiter types ─────────────────────────────────────────────────────────────
@@ -158,14 +161,19 @@ async function getRaydiumSwapTx(computeData: RaydiumComputeData, userPublicKey: 
 
 // ── Unified public API ────────────────────────────────────────────────────────
 
-/** Try Jupiter first, fall back to Raydium. Throws only if both fail. */
+/**
+ * Try Jupiter → Raydium → Meteora DBC (WSOL-paired pools only, requires connection).
+ * Throws only if all fail.
+ */
 export async function getSolanaQuote(params: {
   inputMint: string;
   outputMint: string;
   amount: string;
   slippageBps?: number;
+  /** Required for Meteora DBC fallback (only used when inputMint === WSOL) */
+  connection?: Connection;
 }): Promise<SolanaSwapQuote> {
-  // Jupiter
+  // ── Jupiter ───────────────────────────────────────────────────────────────
   try {
     const jup = await getJupiterQuote(params);
     return {
@@ -183,28 +191,77 @@ export async function getSolanaQuote(params: {
     console.warn('[Assetux] Jupiter failed:', (jupErr as Error).message, '— trying Raydium…');
   }
 
-  // Raydium fallback
-  const ray = await getRaydiumQuote(params);
-  const priceIn = Number(ray.inputAmount);
-  const priceOut = Number(ray.outputAmount);
-  const impact = priceIn > 0 ? Math.abs(1 - priceOut / priceIn) * 100 : 0;
-  return {
-    source: 'raydium',
-    inputMint: ray.inputMint,
-    outputMint: ray.outputMint,
-    inAmount: ray.inputAmount,
-    outAmount: ray.outputAmount,
-    otherAmountThreshold: ray.otherAmountThreshold,
-    priceImpactPct: impact.toFixed(4),
-    routeLabel: ray.routePlan.map(r => r.poolType || 'Raydium').join(' + ') || 'Raydium',
-    _raw: ray,
-  };
+  // ── Raydium fallback ──────────────────────────────────────────────────────
+  try {
+    const ray = await getRaydiumQuote(params);
+    const priceIn = Number(ray.inputAmount);
+    const priceOut = Number(ray.outputAmount);
+    const impact = priceIn > 0 ? Math.abs(1 - priceOut / priceIn) * 100 : 0;
+    return {
+      source: 'raydium',
+      inputMint: ray.inputMint,
+      outputMint: ray.outputMint,
+      inAmount: ray.inputAmount,
+      outAmount: ray.outputAmount,
+      otherAmountThreshold: ray.otherAmountThreshold,
+      priceImpactPct: impact.toFixed(4),
+      routeLabel: ray.routePlan.map(r => r.poolType || 'Raydium').join(' + ') || 'Raydium',
+      _raw: ray,
+    };
+  } catch (rayErr) {
+    console.warn('[Assetux] Raydium failed:', (rayErr as Error).message, '— trying Meteora DBC…');
+  }
+
+  // ── Meteora DBC fallback (SOL/WSOL→token only) ────────────────────────────
+  if (params.inputMint === WSOL && params.connection) {
+    const { findMeteoraDbcPool, getMeteoraDbcQuote } = await import('./meteora');
+    const poolAddress = await findMeteoraDbcPool(params.outputMint, params.connection);
+    if (!poolAddress) throw new Error('No route found: token not on Jupiter, Raydium, or Meteora DBC');
+    const dbcQ = await getMeteoraDbcQuote({
+      tokenMint: params.outputMint,
+      poolAddress,
+      amountInLamports: params.amount,
+      slippageBps: params.slippageBps,
+      connection: params.connection,
+    });
+    return {
+      source: 'meteora-dbc',
+      inputMint: WSOL,
+      outputMint: params.outputMint,
+      inAmount: dbcQ.inAmount,
+      outAmount: dbcQ.outAmount,
+      otherAmountThreshold: dbcQ.minAmountOut,
+      priceImpactPct: '0',
+      routeLabel: 'Meteora DBC',
+      _raw: dbcQ,
+    };
+  }
+
+  throw new Error('No route found: Jupiter and Raydium both failed (pass connection for Meteora DBC fallback)');
 }
 
 /** Build swap transaction(s) for a SolanaSwapQuote. Returns base64-encoded txs in execution order. */
-export async function getSolanaSwapTxs(quote: SolanaSwapQuote, userPublicKey: string): Promise<string[]> {
+export async function getSolanaSwapTxs(
+  quote: SolanaSwapQuote,
+  userPublicKey: string,
+  connection?: Connection,
+): Promise<string[]> {
   if (quote.source === 'jupiter') {
     return getJupiterSwapTx(quote._raw as JupiterQuoteResponse, userPublicKey);
   }
-  return getRaydiumSwapTx(quote._raw as RaydiumComputeData, userPublicKey);
+  if (quote.source === 'raydium') {
+    return getRaydiumSwapTx(quote._raw as RaydiumComputeData, userPublicKey);
+  }
+  // Meteora DBC
+  if (!connection) throw new Error('Solana connection required for Meteora DBC swap');
+  const { getMeteoraDbcSwapTx } = await import('./meteora');
+  const { PublicKey } = await import('@solana/web3.js');
+  const dbcQuote = quote._raw as import('./meteora').MeteoraDbcQuote;
+  const tx = await getMeteoraDbcSwapTx({ owner: userPublicKey, quote: dbcQuote, connection });
+  const { blockhash } = await connection.getLatestBlockhash();
+  tx.recentBlockhash = blockhash;
+  tx.feePayer = new PublicKey(userPublicKey);
+  const serialized = tx.serialize({ requireAllSignatures: false });
+  const b64 = btoa(new Uint8Array(serialized).reduce((s, b) => s + String.fromCharCode(b), ''));
+  return [b64];
 }

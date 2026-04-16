@@ -486,9 +486,9 @@ export function SwapWidget({
         // ── Jupiter fallback for Solana destinations ────────────────────────
         if (toIsSolana) {
           if (isSolana(fromChain)) {
-            // Solana → Solana: direct Jupiter/Raydium swap
+            // Solana → Solana: direct Jupiter/Raydium/Meteora DBC swap
             const inputMint = fromToken.address === NATIVE ? WSOL : fromToken.address;
-            const solQ = await getSolanaQuote({ inputMint, outputMint: toToken.address, amount: resolvedFromAmount });
+            const solQ = await getSolanaQuote({ inputMint, outputMint: toToken.address, amount: resolvedFromAmount, connection: solanaConnection });
             setJupiterQuote(solQ);
             setQuoteSource('jupiter');
             console.log(`[Assetux] ${solQ.source} fallback (Solana→Solana):`, formatAmount(solQ.outAmount, toToken.decimals), toToken.symbol);
@@ -496,23 +496,48 @@ export function SwapWidget({
             else setFromAmount(formatUnits(BigInt(resolvedFromAmount), fromToken.decimals));
             return;
           } else {
-            // EVM → Solana: LI.FI bridge to USDC on Solana + Jupiter/Raydium swap USDC→target
+            // EVM → Solana: try LI.FI bridge to USDC + Jupiter/Raydium first
             const solDest = quoteToAddress !== SOLANA_PLACEHOLDER ? quoteToAddress : (solPublicKey?.toBase58() || SOLANA_PLACEHOLDER);
+            try {
+              const bridgeQ = await getQuote({
+                fromChain: fromChain.id, toChain: toChain.id,
+                fromToken: fromToken.address, toToken: USDC_SOLANA,
+                fromAmount: resolvedFromAmount, fromAddress: quoteFromAddress,
+                toAddress: solDest,
+              });
+              const solQ = await getSolanaQuote({
+                inputMint: USDC_SOLANA,
+                outputMint: toToken.address,
+                amount: bridgeQ.estimate.toAmountMin,
+                connection: solanaConnection,
+              });
+              setBridgeToUsdcQuote(bridgeQ);
+              setJupiterQuote(solQ);
+              setQuoteSource('lifi+jupiter');
+              console.log(`[Assetux] LI.FI+${solQ.source} fallback: bridge→`, formatAmount(bridgeQ.estimate.toAmountMin, 6), `USDC → ${solQ.source}→`, formatAmount(solQ.outAmount, toToken.decimals), toToken.symbol);
+              if (side === 'from') setToAmount(formatAmount(solQ.outAmount, toToken.decimals));
+              else setFromAmount(formatUnits(BigInt(resolvedFromAmount), fromToken.decimals));
+              return;
+            } catch (usdcErr) {
+              console.warn('[Assetux] USDC bridge+Jupiter/Raydium failed:', (usdcErr as Error).message, '— trying WSOL bridge + Meteora DBC…');
+            }
+            // Fallback: LI.FI bridge to WSOL + Meteora DBC swap
             const bridgeQ = await getQuote({
               fromChain: fromChain.id, toChain: toChain.id,
-              fromToken: fromToken.address, toToken: USDC_SOLANA,
+              fromToken: fromToken.address, toToken: WSOL,
               fromAmount: resolvedFromAmount, fromAddress: quoteFromAddress,
               toAddress: solDest,
             });
             const solQ = await getSolanaQuote({
-              inputMint: USDC_SOLANA,
+              inputMint: WSOL,
               outputMint: toToken.address,
               amount: bridgeQ.estimate.toAmountMin,
+              connection: solanaConnection,
             });
             setBridgeToUsdcQuote(bridgeQ);
             setJupiterQuote(solQ);
             setQuoteSource('lifi+jupiter');
-            console.log(`[Assetux] LI.FI+${solQ.source} fallback: bridge→`, formatAmount(bridgeQ.estimate.toAmountMin, 6), `USDC → ${solQ.source}→`, formatAmount(solQ.outAmount, toToken.decimals), toToken.symbol);
+            console.log(`[Assetux] LI.FI+${solQ.source} fallback: bridge→`, formatAmount(bridgeQ.estimate.toAmountMin, 9), `WSOL → Meteora DBC→`, formatAmount(solQ.outAmount, toToken.decimals), toToken.symbol);
             if (side === 'from') setToAmount(formatAmount(solQ.outAmount, toToken.decimals));
             else setFromAmount(formatUnits(BigInt(resolvedFromAmount), fromToken.decimals));
             return;
@@ -616,9 +641,10 @@ export function SwapWidget({
     setSwapping(true);
     setError('');
     try {
-      const txs = await getSolanaSwapTxs(jupiterQuote, solPublicKey.toBase58());
+      const txs = await getSolanaSwapTxs(jupiterQuote, solPublicKey.toBase58(), solanaConnection);
       const sig = await sendSolanaTxs(txs);
-      setSuccess(`Swapped via ${jupiterQuote.source === 'raydium' ? 'Raydium' : 'Jupiter'}! Sig: ${sig.slice(0, 16)}…`);
+      const dexName = jupiterQuote.source === 'raydium' ? 'Raydium' : jupiterQuote.source === 'meteora-dbc' ? 'Meteora DBC' : 'Jupiter';
+      setSuccess(`Swapped via ${dexName}! Sig: ${sig.slice(0, 16)}…`);
       setJupiterQuote(null); setFromAmount(''); setToAmount('');
     } catch (e: any) {
       setError(e.message);
@@ -671,31 +697,52 @@ export function SwapWidget({
       });
       await freshPublic.waitForTransactionReceipt({ hash: bridgeHash });
 
-      // ── Step 2: Wait for USDC to arrive on Solana ────────────────────────
-      setJupiterSwapStep('awaiting-usdc');
-      const usdcMint = new PublicKey(USDC_SOLANA);
-      const usdcAta = getAssociatedTokenAddressSync(usdcMint, solPublicKey);
-      const expectedUsdc = BigInt(bridgeToUsdcQuote.estimate.toAmountMin);
-      let arrived = false;
-      for (let i = 0; i < 120; i++) { // poll every 5s for up to 10 min
-        await new Promise(r => setTimeout(r, 5000));
-        try {
-          const bal = await solanaConnection.getTokenAccountBalance(usdcAta);
-          if (BigInt(bal.value.amount) >= expectedUsdc) { arrived = true; break; }
-        } catch { /* ATA may not exist yet */ }
-      }
-      if (!arrived) throw new Error('USDC did not arrive on Solana within 10 minutes. Your bridge is still processing — the Jupiter swap did not execute. Complete it manually once USDC arrives.');
+      const isDbcSwap = jupiterQuote.source === 'meteora-dbc';
 
-      // ── Step 3: Jupiter/Raydium swap USDC → target token ─────────────────
+      // ── Step 2: Wait for bridged asset to arrive on Solana ───────────────
+      setJupiterSwapStep('awaiting-usdc');
+      const expectedMin = BigInt(bridgeToUsdcQuote.estimate.toAmountMin);
+      let arrived = false;
+
+      if (isDbcSwap) {
+        // Bridging to WSOL/SOL — poll native SOL balance
+        const initBalance = BigInt(await solanaConnection.getBalance(solPublicKey));
+        for (let i = 0; i < 120; i++) {
+          await new Promise(r => setTimeout(r, 5000));
+          try {
+            const bal = BigInt(await solanaConnection.getBalance(solPublicKey));
+            // Allow 10% slippage on arrival detection
+            if (bal >= initBalance + expectedMin * 90n / 100n) { arrived = true; break; }
+          } catch { /* ignore */ }
+        }
+        if (!arrived) throw new Error('SOL did not arrive on Solana within 10 minutes. Your bridge is still processing — the Meteora DBC swap did not execute. Complete it manually once SOL arrives.');
+      } else {
+        // Bridging to USDC — poll token account balance
+        const usdcMint = new PublicKey(USDC_SOLANA);
+        const usdcAta = getAssociatedTokenAddressSync(usdcMint, solPublicKey);
+        for (let i = 0; i < 120; i++) {
+          await new Promise(r => setTimeout(r, 5000));
+          try {
+            const bal = await solanaConnection.getTokenAccountBalance(usdcAta);
+            if (BigInt(bal.value.amount) >= expectedMin) { arrived = true; break; }
+          } catch { /* ATA may not exist yet */ }
+        }
+        if (!arrived) throw new Error('USDC did not arrive on Solana within 10 minutes. Your bridge is still processing — the Jupiter swap did not execute. Complete it manually once USDC arrives.');
+      }
+
+      // ── Step 3: DEX swap on Solana ────────────────────────────────────────
       setJupiterSwapStep('swapping');
+      const swapInputMint = isDbcSwap ? WSOL : USDC_SOLANA;
       const freshSolQ = await getSolanaQuote({
-        inputMint: USDC_SOLANA,
+        inputMint: swapInputMint,
         outputMint: toToken.address,
         amount: bridgeToUsdcQuote.estimate.toAmountMin,
+        connection: solanaConnection,
       });
-      const txs = await getSolanaSwapTxs(freshSolQ, solPublicKey.toBase58());
+      const txs = await getSolanaSwapTxs(freshSolQ, solPublicKey.toBase58(), solanaConnection);
       const sig = await sendSolanaTxs(txs);
-      setSuccess(`Bridge + ${freshSolQ.source === 'raydium' ? 'Raydium' : 'Jupiter'} swap complete! Solana tx: ${sig.slice(0, 16)}…`);
+      const dexName = freshSolQ.source === 'raydium' ? 'Raydium' : freshSolQ.source === 'meteora-dbc' ? 'Meteora DBC' : 'Jupiter';
+      setSuccess(`Bridge + ${dexName} swap complete! Solana tx: ${sig.slice(0, 16)}…`);
       setBridgeToUsdcQuote(null); setJupiterQuote(null); setFromAmount(''); setToAmount('');
     } catch (e: any) {
       setError(e.message);
@@ -1304,8 +1351,8 @@ export function SwapWidget({
                   label={
                     quoteSource === '0x'          ? '0x Protocol ✓' :
                     quoteSource === '0x-cross'    ? '0x Cross-Chain ✓' :
-                    quoteSource === 'jupiter'     ? `${jupiterQuote?.source === 'raydium' ? 'Raydium' : 'Jupiter'} ✓` :
-                    quoteSource === 'lifi+jupiter' ? `LI.FI Bridge + ${jupiterQuote?.source === 'raydium' ? 'Raydium' : 'Jupiter'} ✓` :
+                    quoteSource === 'jupiter'     ? `${jupiterQuote?.source === 'raydium' ? 'Raydium' : jupiterQuote?.source === 'meteora-dbc' ? 'Meteora DBC' : 'Jupiter'} ✓` :
+                    quoteSource === 'lifi+jupiter' ? `LI.FI Bridge + ${jupiterQuote?.source === 'raydium' ? 'Raydium' : jupiterQuote?.source === 'meteora-dbc' ? 'Meteora DBC' : 'Jupiter'} ✓` :
                     fromChain && toChain && fromChain.id !== toChain.id
                       ? `LI.FI ✓ (cross-chain)`
                       : (quote?.toolDetails?.name || quote?.tool || 'LI.FI ✓')
@@ -1418,11 +1465,18 @@ export function SwapWidget({
               <>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
                   <Typography variant="caption" color="text.secondary">Step 1</Typography>
-                  <Typography variant="caption">Bridge → {formatAmount(bridgeToUsdcQuote.estimate.toAmountMin, 6)} USDC on Solana</Typography>
+                  <Typography variant="caption">
+                    Bridge → {jupiterQuote.source === 'meteora-dbc'
+                      ? `${formatAmount(bridgeToUsdcQuote.estimate.toAmountMin, 9)} SOL`
+                      : `${formatAmount(bridgeToUsdcQuote.estimate.toAmountMin, 6)} USDC`} on Solana
+                  </Typography>
                 </Box>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
                   <Typography variant="caption" color="text.secondary">Step 2</Typography>
-                  <Typography variant="caption">Jupiter: USDC → {formatAmount(jupiterQuote.outAmount, toToken?.decimals ?? 6)} {toToken?.symbol}</Typography>
+                  <Typography variant="caption">
+                    {jupiterQuote.source === 'meteora-dbc' ? 'Meteora DBC' : jupiterQuote.source === 'raydium' ? 'Raydium' : 'Jupiter'}:&nbsp;
+                    {jupiterQuote.source === 'meteora-dbc' ? 'SOL' : 'USDC'} → {formatAmount(jupiterQuote.outAmount, toToken?.decimals ?? 6)} {toToken?.symbol}
+                  </Typography>
                 </Box>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.5 }}>
                   <Typography variant="caption" color="text.secondary">Bridge time</Typography>
@@ -1437,8 +1491,8 @@ export function SwapWidget({
                 {jupiterSwapStep !== 'idle' && (
                   <Box sx={{ mt: 1, p: 1, borderRadius: 1, background: 'rgba(153,69,255,0.1)', border: '1px solid rgba(153,69,255,0.2)' }}>
                     <Typography variant="caption" sx={{ color: '#9945FF' }}>
-                      {jupiterSwapStep === 'bridging'      ? '⏳ Step 1: Bridging to USDC on Solana…' :
-                       jupiterSwapStep === 'awaiting-usdc' ? '⏳ Step 2: Waiting for USDC to arrive on Solana…' :
+                      {jupiterSwapStep === 'bridging'      ? `⏳ Step 1: Bridging to ${jupiterQuote?.source === 'meteora-dbc' ? 'SOL' : 'USDC'} on Solana…` :
+                       jupiterSwapStep === 'awaiting-usdc' ? `⏳ Step 2: Waiting for ${jupiterQuote?.source === 'meteora-dbc' ? 'SOL' : 'USDC'} to arrive on Solana…` :
                        jupiterSwapStep === 'swapping'      ? '⏳ Step 3: Executing Jupiter swap…' : ''}
                     </Typography>
                   </Box>
@@ -1569,8 +1623,8 @@ export function SwapWidget({
               : `Swap ${fromToken?.symbol} → ${toToken?.symbol} via ${
                 quoteSource === '0x'           ? '0x' :
                 quoteSource === '0x-cross'     ? '0x Cross-Chain' :
-                quoteSource === 'jupiter'      ? (jupiterQuote?.source === 'raydium' ? 'Raydium' : 'Jupiter') :
-                quoteSource === 'lifi+jupiter' ? `LI.FI + ${jupiterQuote?.source === 'raydium' ? 'Raydium' : 'Jupiter'}` :
+                quoteSource === 'jupiter'      ? (jupiterQuote?.source === 'raydium' ? 'Raydium' : jupiterQuote?.source === 'meteora-dbc' ? 'Meteora DBC' : 'Jupiter') :
+                quoteSource === 'lifi+jupiter' ? `LI.FI + ${jupiterQuote?.source === 'raydium' ? 'Raydium' : jupiterQuote?.source === 'meteora-dbc' ? 'Meteora DBC' : 'Jupiter'}` :
                 'LI.FI'}`}
           </Button>
         )}
