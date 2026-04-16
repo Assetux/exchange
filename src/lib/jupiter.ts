@@ -1,6 +1,11 @@
 // Jupiter Aggregator — quote + swap transaction builder
 
-const JUPITER_QUOTE_API = 'https://quote-api.jup.ag/v6';
+// Jupiter migrated from quote-api.jup.ag/v6 to api.jup.ag/swap/v1 in Dec 2024.
+// lite-api.jup.ag/swap/v1 is the free tier (no key). Use api.jup.ag with JUPITER_API_KEY for higher rate limits.
+const JUPITER_API_KEY = process.env.NEXT_PUBLIC_JUPITER_API_KEY;
+const JUPITER_QUOTE_API = JUPITER_API_KEY
+  ? 'https://api.jup.ag/swap/v1'
+  : 'https://lite-api.jup.ag/swap/v1';
 
 export const USDC_SOLANA = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 export const USDC_SOLANA_DECIMALS = 6;
@@ -33,6 +38,9 @@ export interface JupiterQuoteResponse {
   timeTaken: number;
 }
 
+const authHeaders = (): Record<string, string> =>
+  JUPITER_API_KEY ? { 'x-api-key': JUPITER_API_KEY } : {};
+
 export async function getJupiterQuote(params: {
   inputMint: string;
   outputMint: string;
@@ -45,7 +53,7 @@ export async function getJupiterQuote(params: {
     amount: params.amount,
     slippageBps: String(params.slippageBps ?? 300),
   });
-  const res = await fetch(`${JUPITER_QUOTE_API}/quote?${q}`);
+  const res = await fetch(`${JUPITER_QUOTE_API}/quote?${q}`, { headers: authHeaders() });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || 'Jupiter: no route found');
@@ -59,7 +67,7 @@ export async function getJupiterSwapTx(params: {
 }): Promise<{ swapTransaction: string }> {
   const res = await fetch(`${JUPITER_QUOTE_API}/swap`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({
       quoteResponse: params.quoteResponse,
       userPublicKey: params.userPublicKey,
