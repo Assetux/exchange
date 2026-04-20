@@ -435,6 +435,16 @@ export function SwapWidget({
 
       if (side === 'from') {
         resolvedFromAmount = parseUnits(amount, fromToken.decimals).toString();
+      } else if (isSolana(fromChain) && isSolana(toChain)) {
+        // Solana → Solana: LiFi doesn't support this pair and would reject an EVM fromAddress.
+        // Use Jupiter/Raydium/Meteora to derive the rate instead.
+        const refAmount = parseUnits('1', fromToken.decimals).toString();
+        const inputMint = fromToken.address === NATIVE ? WSOL : fromToken.address;
+        const refSolQ = await getSolanaQuote({ inputMint, outputMint: toToken.address, amount: refAmount, connection: solanaConnection });
+        const rate = Number(refSolQ.outAmount) / Number(refAmount);
+        if (!rate) throw new Error('Could not determine rate');
+        const desiredToRaw = parseUnits(amount, toToken.decimals);
+        resolvedFromAmount = ((Number(desiredToRaw) / rate) * 1.03).toFixed(0);
       } else {
         const refAmount = parseUnits('1', fromToken.decimals).toString();
         const refQuote = await getQuote({
