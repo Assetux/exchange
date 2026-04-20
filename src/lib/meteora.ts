@@ -17,6 +17,21 @@ export interface MeteoraDbcQuote {
 const _poolAddressCache = new Map<string, string>();          // tokenMint → poolAddress
 const _poolConfigCache  = new Map<string, any>();             // configAddress → poolConfigState
 
+// ── Short-TTL cache (reduces RPC calls on rapid re-quotes) ───────────────────
+interface TtlEntry<T> { value: T; expiresAt: number }
+const _poolStateCache    = new Map<string, TtlEntry<any>>(); // poolAddress → virtualPoolState (1s TTL)
+const _currentPointCache = new Map<number, TtlEntry<any>>(); // activationType → currentPoint (2s TTL)
+
+function ttlGet<T>(cache: Map<any, TtlEntry<T>>, key: any): T | undefined {
+  const entry = cache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() > entry.expiresAt) { cache.delete(key); return undefined; }
+  return entry.value;
+}
+function ttlSet<T>(cache: Map<any, TtlEntry<T>>, key: any, value: T, ttlMs: number) {
+  cache.set(key, { value, expiresAt: Date.now() + ttlMs });
+}
+
 /** Retry an async fn up to maxRetries times on 429 / rate-limit errors. */
 async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   let delay = 500;
@@ -64,12 +79,16 @@ export async function getMeteoraDbcQuote(params: {
   const client = new DynamicBondingCurveClient(params.connection, 'confirmed');
   const swapBaseForQuote = params.swapBaseForQuote ?? false;
 
-  // virtualPoolState changes with every swap, must be fresh
-  const virtualPoolState = await withRetry(() =>
-    client.state.getPool(new PublicKey(params.poolAddress))
-  );
+  // virtualPoolState: fresh every ~1s — avoids per-keystroke RPC spam
+  let virtualPoolState = ttlGet(_poolStateCache, params.poolAddress);
+  if (!virtualPoolState) {
+    virtualPoolState = await withRetry(() =>
+      client.state.getPool(new PublicKey(params.poolAddress))
+    );
+    ttlSet(_poolStateCache, params.poolAddress, virtualPoolState, 1_000);
+  }
 
-  // poolConfig is immutable — cache it to save an RPC call on repeat quotes
+  // poolConfig is immutable — cache indefinitely
   const configKey = virtualPoolState.config.toBase58();
   if (!_poolConfigCache.has(configKey)) {
     const cfg = await withRetry(() => client.state.getPoolConfig(virtualPoolState.config));
@@ -78,9 +97,14 @@ export async function getMeteoraDbcQuote(params: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const poolConfigState: any = _poolConfigCache.get(configKey);
 
-  const currentPoint = await withRetry(() =>
-    getCurrentPoint(params.connection, poolConfigState.activationType)
-  );
+  // currentPoint = slot or blockTime — refresh every 2s (getSlot costs 20 CU, getBlockTime 40 CU)
+  let currentPoint = ttlGet(_currentPointCache, poolConfigState.activationType);
+  if (!currentPoint) {
+    currentPoint = await withRetry(() =>
+      getCurrentPoint(params.connection, poolConfigState.activationType)
+    );
+    ttlSet(_currentPointCache, poolConfigState.activationType, currentPoint, 2_000);
+  }
 
   const quote = await client.pool.swapQuote({
     virtualPool: virtualPoolState,
