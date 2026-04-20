@@ -15,7 +15,7 @@ export interface MeteoraDbcQuote {
 
 // ── Stable-data cache (pool address + config never change per token) ──────────
 const _poolAddressCache = new Map<string, string>();          // tokenMint → poolAddress
-const _poolConfigCache  = new Map<string, unknown>();         // configAddress → poolConfigState
+const _poolConfigCache  = new Map<string, any>();             // configAddress → poolConfigState
 
 /** Retry an async fn up to maxRetries times on 429 / rate-limit errors. */
 async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
@@ -75,7 +75,8 @@ export async function getMeteoraDbcQuote(params: {
     const cfg = await withRetry(() => client.state.getPoolConfig(virtualPoolState.config));
     _poolConfigCache.set(configKey, cfg);
   }
-  const poolConfigState = _poolConfigCache.get(configKey) as typeof virtualPoolState;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const poolConfigState: any = _poolConfigCache.get(configKey);
 
   const currentPoint = await withRetry(() =>
     getCurrentPoint(params.connection, poolConfigState.activationType)
